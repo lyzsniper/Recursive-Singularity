@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>SINGULARITY — Active Accretion Disk</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  #application-canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  #hud {
+    position: fixed; top: 18px; left: 20px; z-index: 10; pointer-events: none; user-select: none;
+    font-family: 'Consolas', 'Courier New', monospace; color: #cfe0ff;
+    text-shadow: 0 0 10px rgba(90, 140, 255, .55);
+  }
+  #hud .title { font-size: 13px; letter-spacing: 5px; opacity: .92; }
+  #hud .stats { font-size: 11px; letter-spacing: 1.5px; margin-top: 7px; opacity: .72; }
+  #fps { color: #ffd27f; }
+  #hint {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 10;
+    pointer-events: none; user-select: none; font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 11px; letter-spacing: 2.5px; color: #8fa8d8; opacity: .55; white-space: nowrap;
+  }
+  #fallback {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 20;
+    background: #05060a; color: #ff9a7a; font-family: monospace; font-size: 14px;
+    text-align: center; padding: 0 30px; line-height: 1.7;
+  }
+</style>
+<script>
+  // Early error trap — surfaces runtime failures into #fallback (also machine-readable for headless checks).
+  window.__pcErrors = [];
+  window.addEventListener('error', function (e) {
+    window.__pcErrors.push(String(e.message || e.error));
+    var fb = document.getElementById('fallback');
+    if (fb) {
+      fb.style.display = 'flex';
+      fb.textContent = 'Runtime error: ' + window.__pcErrors.join(' | ');
+      fb.setAttribute('data-error', '1');
+    }
+  });
+</script>
+<!-- PlayCanvas engine (the runtime base of Spark JS). Pinned 1.x build: pc.createScript + pc.PostEffect API. -->
+<script src="https://unpkg.com/playcanvas@1.75.0/build/playcanvas.min.js"></script>
+<script>
+  if (!window.pc) {
+    document.write('<script src="https:\/\/cdn.jsdelivr.net\/npm\/playcanvas@1.75.0\/build\/playcanvas.min.js"><\/script>');
+  }
+</script>
+</head>
+<body>
+<canvas id="application-canvas"></canvas>
+<div id="hud">
+  <div class="title">SINGULARITY // ACTIVE ACCRETION</div>
+  <div class="stats"><span id="fps">--</span> FPS &nbsp;&middot;&nbsp; 74,000 PARTICLES &nbsp;&middot;&nbsp; <span id="api">WEBGL</span></div>
+</div>
+<div id="hint">DRAG &mdash; ORBIT &nbsp;&middot;&nbsp; WHEEL &mdash; ZOOM &nbsp;&middot;&nbsp; RIGHT-DRAG &mdash; PAN</div>
+<div id="fallback">PlayCanvas engine failed to load (network / CDN unreachable).</div>
+<script>
+(function () {
+    'use strict';
+
+    if (!window.pc) {
+        document.getElementById('fallback').style.display = 'flex';
+        return;
+    }
+
+    // ======================================================================
+    // 0. Full-screen application boilerplate
+    // ======================================================================
+    var canvas = document.getElementById('application-canvas');
+    var app = new pc.Application(canvas, {
+        graphicsDeviceOptions: { alpha: false, antialias: true }
+    });
+    app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+    app.setCanvasResolution(pc.RESOLUTION_AUTO);
+    app.graphicsDevice.maxPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    window.addEventListener('resize', function () { app.resizeCanvas(); });
+    app.scene.ambientLight = new pc.Color(0, 0, 0);
+
+    var device = app.graphicsDevice;
+    document.getElementById('api').textContent = device.webgl2 ? 'WEBGL2' : 'WEBGL1';
+
+    // ======================================================================
+    // 1. Procedural textures (CORS-proof fallback: canvas -> pc.Texture)
+    // ======================================================================
+    function makeRadialTexture(size, stops) {
+        var c = document.createElement('canvas');
+        c.width = c.height = size;
+        var ctx = c.getContext('2d');
+        var g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+        for (var i = 0; i < stops.length; i++) {
+            g.addColorStop(stops[i][0], 'rgba(255,255,255,' + stops[i][1] + ')');
+        }
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, size, size);
+        var tex = new pc.Texture(device, {
+            width: size,
+            height: size,
+            format: pc.PIXELFORMAT_R8_G8_B8_A8,
+            mipmaps: false,
+            minFilter: pc.FILTER_LINEAR,
+            magFilter: pc.FILTER_LINEAR,
+            addressU: pc.ADDRESS_CLAMP_TO_EDGE,
+            addressV: pc.ADDRESS_CLAMP_TO_EDGE
+        });
+        tex.setSource(c);
+        return tex;
+    }
+
+    var softTex = makeRadialTexture(64,  [[0, 1], [0.25, 0.70], [0.60, 0.18], [1, 0]]);
+    var glowTex = makeRadialTexture(256, [[0, 1], [0.18, 0.85], [0.45, 0.28], [0.75, 0.06], [1, 0]]);
+
+    // ======================================================================
+    // 2. Spark script definitions (pc.createScript)
+    // ======================================================================
+
+    // ---- 2a. Inertia-based OrbitControls: rotate / pan / zoom + touch ----
+    var OrbitControls = pc.createScript('orbitControls');
+    OrbitControls.attributes.add('target',       { type: 'vec3',   default: [0, 0, 0] });
+    OrbitControls.attributes.add('distance',     { type: 'number', default: 26 });
+    OrbitControls.attributes.add('minDistance',  { type: 'number', default: 4 });
+    OrbitControls.attributes.add('maxDistance',  { type: 'number', default: 160 });
+    OrbitControls.attributes.add('rotateSpeed',  { type: 'number', default: 0.25 });
+    OrbitControls.attributes.add('panSpeed',     { type: 'number', default: 0.0016 });
+    OrbitControls.attributes.add('damping',      { type: 'number', default: 0.92 });
+
+    OrbitControls.prototype.initialize = function () {
+        this.yaw = 40;
+        this.pitch = 22;
+        this.yawVel = 0;
+        this.pitchVel = 0;
+        this.targetDistance = this.distance;
+        this.targetPoint = this.target.clone();
+        this._dragButton = -1;
+        this._lastX = 0;
+        this._lastY = 0;
+        this._pinchDistance = 0;
+        this._quat = new pc.Quat();
+        this._offset = new pc.Vec3();
+        this._right = new pc.Vec3();
+        this._up = new pc.Vec3();
+
+        var self = this;
+        var el = this.app.graphicsDevice.canvas;
+
+        this._onMouseDown = function (e) {
+            self._dragButton = e.button;
+            self._lastX = e.clientX;
+            self._lastY = e.clientY;
+            self.yawVel = 0;
+            self.pitchVel = 0;
+        };
+        this._onMouseMove = function (e) {
+            if (self._dragButton === 0) {
+                var dx = e.clientX - self._lastX;
+                var dy = e.clientY - self._lastY;
+                var dYaw = -dx * self.rotateSpeed;
+                var dPitch = -dy * self.rotateSpeed;
+                self.yaw += dYaw;
+                self.pitch += dPitch;
+                self.yawVel = dYaw;      // remembered for inertia on release
+                self.pitchVel = dPitch;
+                self._lastX = e.clientX;
+                self._lastY = e.clientY;
+            } else if (self._dragButton === 2 || self._dragButton === 1) {
+                self._pan(e.clientX - self._lastX, e.clientY - self._lastY);
+                self._lastX = e.clientX;
+                self._lastY = e.clientY;
+            }
+        };
+        this._onMouseUp = function () { self._dragButton = -1; };
+        this._onWheel = function (e) {
+            e.preventDefault();
+            var factor = Math.pow(1.12, e.deltaY / 100);
+            self.targetDistance = pc.math.clamp(self.targetDistance * factor, self.minDistance, self.maxDistance);
+        };
+        this._onContextMenu = function (e) { e.preventDefault(); };
+
+        this._onTouchStart = function (e) {
+            e.preventDefault();
+            if (e.touches.length === 1) {
+                self._dragButton = 0;
+                self._lastX = e.touches[0].clientX;
+                self._lastY = e.touches[0].clientY;
+                self.yawVel = 0;
+                self.pitchVel = 0;
+            } else if (e.touches.length === 2) {
+                self._dragButton = -1;
+                self._pinchDistance = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY);
+            }
+        };
+        this._onTouchMove = function (e) {
+            e.preventDefault();
+            if (e.touches.length === 1 && self._dragButton === 0) {
+                var dx = e.touches[0].clientX - self._lastX;
+                var dy = e.touches[0].clientY - self._lastY;
+                var dYaw = -dx * self.rotateSpeed;
+                var dPitch = -dy * self.rotateSpeed;
+                self.yaw += dYaw;
+                self.pitch += dPitch;
+                self.yawVel = dYaw;
+                self.pitchVel = dPitch;
+                self._lastX = e.touches[0].clientX;
+                self._lastY = e.touches[0].clientY;
+            } else if (e.touches.length === 2) {
+                var d = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY);
+                if (self._pinchDistance > 0 && d > 0) {
+                    self.targetDistance = pc.math.clamp(
+                        self.targetDistance * (self._pinchDistance / d),
+                        self.minDistance, self.maxDistance);
+                }
+                self._pinchDistance = d;
+            }
+        };
+        this._onTouchEnd = function (e) {
+            if (e.touches.length === 0) self._dragButton = -1;
+            if (e.touches.length < 2) self._pinchDistance = 0;
+        };
+
+        el.addEventListener('mousedown', this._onMouseDown);
+        window.addEventListener('mousemove', this._onMouseMove);
+        window.addEventListener('mouseup', this._onMouseUp);
+        el.addEventListener('wheel', this._onWheel, { passive: false });
+        el.addEventListener('contextmenu', this._onContextMenu);
+        el.addEventListener('touchstart', this._onTouchStart, { passive: false });
+        el.addEventListener('touchmove', this._onTouchMove, { passive: false });
+        el.addEventListener('touchend', this._onTouchEnd);
+        el.addEventListener('touchcancel', this._onTouchEnd);
+    };
+
+    OrbitControls.prototype._pan = function (dx, dy) {
+        var q = this.entity.getRotation();
+        q.transformVector(pc.Vec3.RIGHT, this._right);
+        q.transformVector(pc.Vec3.UP, this._up);
+        var s = this.distance * this.panSpeed;
+        this.targetPoint.sub(this._right.mulScalar(dx * s));
+        this.targetPoint.add(this._up.mulScalar(dy * s));
+    };
+
+    OrbitControls.prototype.update = function (dt) {
+        // inertia: keep spinning after release, exponentially damped
+        if (this._dragButton !== 0) {
+            var damp = Math.pow(this.damping, dt * 60);
+            this.yaw += this.yawVel;
+            this.pitch += this.pitchVel;
+            this.yawVel *= damp;
+            this.pitchVel *= damp;
+            if (Math.abs(this.yawVel) < 0.001) this.yawVel = 0;
+            if (Math.abs(this.pitchVel) < 0.001) this.pitchVel = 0;
+        }
+        this.pitch = pc.math.clamp(this.pitch, -89, 89);
+
+        // critically-damped-ish smooth zoom
+        this.distance += (this.targetDistance - this.distance) * Math.min(1, dt * 8);
+
+        var q = this._quat.setFromEulerAngles(this.pitch, this.yaw, 0);
+        var offset = this._offset.set(0, 0, this.distance);
+        q.transformVector(offset, offset);
+        this.entity.setPosition(
+            this.targetPoint.x + offset.x,
+            this.targetPoint.y + offset.y,
+            this.targetPoint.z + offset.z);
+        this.entity.setRotation(q);
+    };
+
+    // ---- 2b. Lensing controller: feeds screen-space singularity uniforms ----
+    var LensingController = pc.createScript('lensingController');
+    LensingController.attributes.add('ringRadius',    { type: 'number', default: 2.7 });  // world-space Einstein ring radius
+    LensingController.attributes.add('horizonRadius', { type: 'number', default: 1.13 }); // world-space capture radius
+    LensingController.attributes.add('strength',      { type: 'number', default: 1.0 });
+
+    LensingController.prototype.initialize = function () {
+        this.effect = null; // wired up from main scope after creation
+        this._view = new pc.Mat4();
+        this._vp = new pc.Mat4();
+        this._clip = new pc.Vec4();
+        this._side = new pc.Vec3();
+        this._c = [0, 0];
+        this._p = [0, 0];
+    };
+
+    // world -> GL uv (bottom-left origin, matches post-effect vUv0)
+    LensingController.prototype._project = function (x, y, z, out) {
+        this._view.copy(this.entity.getWorldTransform()).invert();
+        this._vp.mul2(this.entity.camera.projectionMatrix, this._view);
+        var c = this._clip.set(x, y, z, 1);
+        this._vp.transformVec4(c, c);
+        if (c.w <= 1e-4) return false; // behind camera
+        out[0] = (c.x / c.w) * 0.5 + 0.5;
+        out[1] = (c.y / c.w) * 0.5 + 0.5;
+        return true;
+    };
+
+    LensingController.prototype.update = function (dt) {
+        var fx = this.effect;
+        if (!fx) return;
+        fx.time += dt;
+
+        var dev = this.app.graphicsDevice;
+        var aspect = dev.width / Math.max(dev.height, 1);
+        fx.aspect = aspect;
+
+        if (!this._project(0, 0, 0, this._c)) {
+            // singularity behind the camera: pass scene through untouched
+            fx.strength = 0;
+            fx.radius = 1e-4;
+            fx.horizon = 0;
+            return;
+        }
+        fx.center[0] = this._c[0];
+        fx.center[1] = this._c[1];
+
+        // project a radius along a view-perpendicular axis for a stable screen radius
+        var fwd = this.entity.forward;
+        this._side.cross(fwd, pc.Vec3.UP);
+        if (this._side.lengthSq() < 1e-6) this._side.set(1, 0, 0);
+        else this._side.normalize();
+
+        var s = this._side;
+        if (this._project(s.x * this.ringRadius, s.y * this.ringRadius, s.z * this.ringRadius, this._p)) {
+            var dx = (this._p[0] - this._c[0]) * aspect;
+            var dy = this._p[1] - this._c[1];
+            fx.radius = Math.min(Math.sqrt(dx * dx + dy * dy), 2.0);
+        }
+        if (this._project(s.x * this.horizonRadius, s.y * this.horizonRadius, s.z * this.horizonRadius, this._p)) {
+            var hx = (this._p[0] - this._c[0]) * aspect;
+            var hy = this._p[1] - this._c[1];
+            fx.horizon = Math.min(Math.sqrt(hx * hx + hy * hy), 1.5);
+        }
+        fx.strength = this.strength;
+    };
+
+    // ---- 2c. System driver: pushes per-frame uniforms into custom materials ----
+    var SystemDriver = pc.createScript('systemDriver');
+    SystemDriver.prototype.initialize = function () {
+        this.time = 0;
+        this.diskMaterial = null; // wired from main scope
+        this.starMaterial = null;
+        this.cameraEntity = null;
+    };
+    SystemDriver.prototype.update = function (dt) {
+        this.time += dt;
+        if (!this.cameraEntity) this.cameraEntity = this.app.root.findByName('Camera');
+        if (!this.cameraEntity) return;
+        if (this.diskMaterial) {
+            this.diskMaterial.setParameter('uTime', this.time);
+            // gl_PointSize = uPointScale * worldSize / viewDepth  (device pixels)
+            var proj = this.cameraEntity.camera.projectionMatrix;
+            this.diskMaterial.setParameter('uPointScale', proj.data[5] * this.app.graphicsDevice.height * 0.5);
+        }
+        if (this.starMaterial) {
+            this.starMaterial.setParameter('uTime', this.time);
+        }
+    };
+
+    // ---- 2d. Billboard: keeps the core-glow quad facing the camera ----
+    var Billboard = pc.createScript('billboard');
+    Billboard.prototype.initialize = function () {
+        this.cameraEntity = this.app.root.findByName('Camera');
+        this._offset = new pc.Quat().setFromEulerAngles(-90, 0, 0); // plane primitive lies in XZ
+        this._q = new pc.Quat();
+    };
+    Billboard.prototype.update = function () {
+        if (!this.cameraEntity) return;
+        this._q.mul2(this.cameraEntity.getRotation(), this._offset);
+        this.entity.setRotation(this._q);
+    };
+
+    // ======================================================================
+    // 3. Gravitational lensing post-process (custom pc.PostEffect)
+    // ======================================================================
+    var LENS_VS = [
+        'attribute vec2 vertex_position;',
+        'varying vec2 vUv0;',
+        'void main(void) {',
+        '    gl_Position = vec4(vertex_position, 0.5, 1.0);',
+        '    vUv0 = vertex_position.xy * 0.5 + 0.5;',
+        '}'
+    ].join('\n');
+
+    var LENS_FS = [
+        'precision highp float;',
+        'varying vec2 vUv0;',
+        'uniform sampler2D uColorBuffer;',
+        'uniform vec2 uCenter;',
+        'uniform float uAspect;',
+        'uniform float uRadius;',    // screen-space Einstein radius (aspect-corrected)
+        'uniform float uHorizon;',   // screen-space photon-capture radius
+        'uniform float uStrength;',
+        'uniform float uTime;',
+        'void main(void) {',
+        '    vec2 uv = vUv0;',
+        '    vec2 d = uv - uCenter;',
+        '    d.x *= uAspect;',
+        '    float r = max(length(d), 1e-5);',
+        '    vec2 dir = d / r;',
+        '',
+        '    // frame-dragging swirl, stronger near the singularity',
+        '    float swirl = 0.30 * uRadius / (r + uRadius * 0.6);',
+        '    float cs = cos(swirl);',
+        '    float sn = sin(swirl);',
+        '    vec2 sd = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);',
+        '',
+        '    // gravitational bending with 1/r^2 falloff; bend == 1 at the Einstein radius',
+        '    float rr = max(r, uRadius * 0.05);',
+        '    float bend = uStrength * uRadius * uRadius / (rr * rr);',
+        '    bend = min(bend, 4.0);',
+        '    vec2 lensed = sd * (1.0 - bend);',
+        '',
+        '    vec2 sampleUv = uCenter + vec2(lensed.x / uAspect, lensed.y);',
+        '    sampleUv = clamp(sampleUv, vec2(0.001), vec2(0.999));',
+        '',
+        '    // chromatic aberration, amplified by the bending field',
+        '    float ca = 0.0012 + 0.004 * bend;',
+        '    vec2 caOff = vec2(dir.x / uAspect, dir.y) * ca;',
+        '    vec3 col;',
+        '    col.r = texture2D(uColorBuffer, clamp(sampleUv + caOff, vec2(0.001), vec2(0.999))).r;',
+        '    col.g = texture2D(uColorBuffer, sampleUv).g;',
+        '    col.b = texture2D(uColorBuffer, clamp(sampleUv - caOff, vec2(0.001), vec2(0.999))).b;',
+        '',
+        '    // photon capture: inside the horizon no light escapes',
+        '    float capture = smoothstep(uHorizon * 0.92, uHorizon * 1.08 + 1e-5, r);',
+        '    col *= capture;',
+        '',
+        '    // Einstein ring shimmer',
+        '    float ringWidth = uRadius * 0.085 + 1e-4;',
+        '    float ring = exp(-pow((r - uRadius) / ringWidth, 2.0));',
+        '    ring *= 0.85 + 0.15 * sin(uTime * 6.0 + atan(dir.y, dir.x) * 5.0);',
+        '    col += vec3(1.15, 1.05, 0.85) * ring * 0.85 * capture;',
+        '',
+        '    // hot glow clinging to the photon sphere',
+        '    float pglow = exp(-max(r - uHorizon, 0.0) / (uRadius * 0.30 + 1e-4));',
+        '    col += vec3(1.0, 0.62, 0.30) * pglow * 0.30 * capture;',
+        '',
+        '    // vignette',
+        '    vec2 vc = uv - vec2(0.5);',
+        '    col *= 1.0 - 0.38 * dot(vc, vc);',
+        '',
+        '    // dither against color banding',
+        '    float n = fract(sin(dot(uv + uTime * 0.01, vec2(12.9898, 78.233))) * 43758.5453);',
+        '    col += (n - 0.5) * 0.012;',
+        '',
+        '    gl_FragColor = vec4(col, 1.0);',
+        '}'
+    ].join('\n');
+
+    function LensingEffect(graphicsDevice) {
+        pc.PostEffect.call(this, graphicsDevice);
+        this.center = new Float32Array([0.5, 0.5]);
+        this.aspect = 1;
+        this.radius = 0.1;
+        this.horizon = 0.05;
+        this.strength = 1;
+        this.time = 0;
+        this.shader = new pc.Shader(graphicsDevice, {
+            attributes: { vertex_position: pc.SEMANTIC_POSITION },
+            vshader: LENS_VS,
+            fshader: LENS_FS
+        });
+    }
+    LensingEffect.prototype = Object.create(pc.PostEffect.prototype);
+    LensingEffect.prototype.constructor = LensingEffect;
+    LensingEffect.prototype.render = function (inputTarget, outputTarget, rect) {
+        var scope = this.device.scope;
+        scope.resolve('uColorBuffer').setValue(inputTarget.colorBuffer);
+        scope.resolve('uCenter').setValue(this.center);
+        scope.resolve('uAspect').setValue(this.aspect);
+        scope.resolve('uRadius').setValue(this.radius);
+        scope.resolve('uHorizon').setValue(this.horizon);
+        scope.resolve('uStrength').setValue(this.strength);
+        scope.resolve('uTime').setValue(this.time);
+        pc.drawQuadWithShader(this.device, outputTarget, this.shader, rect);
+    };
+
+    // ======================================================================
+    // 4. Camera + post effect wiring
+    // ======================================================================
+    var camera = new pc.Entity('Camera');
+    app.root.addChild(camera);
+    camera.addComponent('camera', {
+        nearClip: 0.1,
+        farClip: 4000,
+        fov: 55,
+        clearColor: new pc.Color(0.004, 0.004, 0.012)
+    });
+    camera.addComponent('script');
+    camera.script.create('orbitControls');
+    var lensingFx = new LensingEffect(device);
+    camera.camera.postEffects.addEffect(lensingFx);
+    var lensingCtl = camera.script.create('lensingController');
+    lensingCtl.effect = lensingFx;
+
+    // ======================================================================
+    // 5. The core anomaly: event horizon sphere + core glow billboard
+    // ======================================================================
+    var hole = new pc.Entity('EventHorizon');
+    app.root.addChild(hole);
+    hole.addComponent('model', { type: 'sphere' });
+    var holeMat = new pc.StandardMaterial();
+    holeMat.diffuse.set(0, 0, 0);
+    holeMat.specular.set(0, 0, 0);
+    holeMat.emissive.set(0, 0, 0);
+    holeMat.useLighting = false;
+    holeMat.blendType = pc.BLEND_NONE;
+    holeMat.depthWrite = true;
+    holeMat.update();
+    hole.model.meshInstances[0].material = holeMat;
+    hole.setLocalScale(2.3, 2.3, 2.3); // radius 1.15 — occludes disk/stars behind it
+
+    var glow = new pc.Entity('CoreGlow');
+    app.root.addChild(glow);
+    glow.addComponent('model', { type: 'plane' });
+    var glowMat = new pc.StandardMaterial();
+    glowMat.diffuse.set(0, 0, 0);
+    glowMat.specular.set(0, 0, 0);
+    glowMat.emissive.set(1.6, 1.35, 1.05);
+    glowMat.emissiveMap = glowTex;
+    glowMat.useLighting = false;
+    glowMat.blendType = pc.BLEND_ADDITIVE;
+    glowMat.depthWrite = false;
+    glowMat.cull = pc.CULLFACE_NONE;
+    glowMat.update();
+    glow.model.meshInstances[0].material = glowMat;
+    glow.setLocalScale(9, 9, 9);
+    glow.addComponent('script');
+    glow.script.create('billboard');
+
+    // ======================================================================
+    // 6. Accretion disk — pc.ParticleSystemComponent, 20,000 particles
+    //    Inward radial pull (negative radialSpeed) + temperature colorGraph
+    //    (dull red at birth/outer -> fierce orange -> white-blue at death/inner)
+    // ======================================================================
+    var diskPS = new pc.Entity('AccretionDiskPS');
+    app.root.addChild(diskPS);
+    diskPS.addComponent('particlesystem', {
+        autoPlay: true,
+        numParticles: 20000,
+        lifetime: 7,
+        rate: 3200,                 // 3200/s * 7s lifetime keeps the 20k pool saturated
+        loop: true,
+        preWarm: true,
+        emitterShape: pc.EMITTERSHAPE_BOX,
+        emitterExtents: new pc.Vec3(8, 0.06, 8), // razor-thin slab
+        // inward radial pull, accelerating as matter falls toward the hole
+        radialSpeedGraph:  new pc.Curve([0, -0.35, 0.5, -1.1, 1, -2.6]),
+        radialSpeedGraph2: new pc.Curve([0, -0.15, 0.5, -0.7, 1, -1.8]),
+        // turbulent local jitter (per-particle random between graph and graph2)
+        localVelocityGraph:  new pc.CurveSet([[0, -0.45, 1, -0.45], [0, -0.07, 1, -0.07], [0, -0.45, 1, -0.45]]),
+        localVelocityGraph2: new pc.CurveSet([[0,  0.45, 1,  0.45], [0,  0.07, 1,  0.07], [0,  0.45, 1,  0.45]]),
+        rotationSpeedGraph:  new pc.Curve([0, 30, 1, 140]),
+        rotationSpeedGraph2: new pc.Curve([0, -30, 1, -140]),
+        scaleGraph:  new pc.Curve([0, 0.30, 0.6, 0.24, 1, 0.10]),
+        scaleGraph2: new pc.Curve([0, 0.16, 0.6, 0.13, 1, 0.05]),
+        // temperature ramp over lifetime: particles are born at the cold outer
+        // rim and die at the white-hot inner rim (inward drift makes age ~ radius)
+        colorGraph: new pc.CurveSet([
+            [0, 0.50, 0.45, 1.00, 1, 0.95],
+            [0, 0.09, 0.45, 0.52, 1, 0.96],
+            [0, 0.04, 0.45, 0.14, 1, 1.00]
+        ]),
+        colorGraph2: new pc.CurveSet([
+            [0, 0.38, 0.45, 0.85, 1, 0.85],
+            [0, 0.06, 0.45, 0.40, 1, 0.85],
+            [0, 0.03, 0.45, 0.10, 1, 0.90]
+        ]),
+        // alpha fade in/out over lifetime
+        alphaGraph:  new pc.Curve([0, 0, 0.10, 0.55, 0.70, 0.38, 1, 0]),
+        alphaGraph2: new pc.Curve([0, 0, 0.10, 0.32, 0.70, 0.22, 1, 0]),
+        blendType: pc.BLEND_ADDITIVE,
+        colorMap: softTex,
+        intensity: 1.5,
+        depthWrite: false,
+        depthSoftening: 0,
+        sort: pc.PARTICLESORT_NONE,
+        startAngle: 0,
+        startAngle2: 360,
+        stretch: 0,
+        alignToMotion: false,
+        lighting: false,
+        halfLambert: false,
+        initialVelocity: 0
+    });
+
+    // ======================================================================
+    // 7. Keplerian vortex layer — 40,000 GPU point-sprites, ONE draw call.
+    //    The built-in particle graphs cannot express per-particle tangential
+    //    velocity, so the exact vortex law lives in this vertex shader:
+    //      omega = sqrt(GM) * r^-1.5   =>   orbital speed v = omega*r ~ 1/sqrt(r)
+    //    plus a steady inward radial pull (spiral accretion).
+    // ======================================================================
+    var DISK_VS = [
+        'attribute vec4 aSeed;', // x: radius norm, y: angle0, z/w: randoms
+        'uniform mat4 matrix_view;',
+        'uniform mat4 matrix_projection;',
+        'uniform vec3 view_position;',
+        'uniform float uTime;',
+        'uniform float uInner;',     // ISCO radius
+        'uniform float uOuter;',     // outer disk radius
+        'uniform float uInflow;',    // radial inflow speed (world units / s)
+        'uniform float uK;',         // Kepler constant sqrt(GM)
+        'uniform float uPointScale;',
+        'varying vec4 vColor;',
+        'vec3 temperature(float t) {', // t: 0 = inner (hot) .. 1 = outer (cold)
+        '    vec3 hot  = vec3(0.75, 0.85, 1.00) * 3.2;',  // blinding white-blue
+        '    vec3 mid  = vec3(1.00, 0.45, 0.10) * 1.5;',  // fierce orange
+        '    vec3 cold = vec3(0.40, 0.06, 0.02);',        // dull red
+        '    if (t < 0.22) return mix(hot, mid, t / 0.22);',
+        '    return mix(mid, cold, (t - 0.22) / 0.78);',
+        '}',
+        'void main(void) {',
+        '    float r0 = mix(uInner + 0.25, uOuter, pow(aSeed.x, 1.6));',
+        '    float cycle = (r0 - uInner) / uInflow;',     // time to spiral from r0 to the ISCO
+        '    float age = mod(uTime + aSeed.w * cycle, cycle);',
+        '    float r = r0 - uInflow * age;',             // inward radial pull
+        '',
+        '    float omega = uK * pow(r, -1.5);',          // Keplerian angular velocity
+        '    float theta = aSeed.y * 6.2831853 + omega * uTime;',
+        '',
+        '    // turbulence: radius wobble + vertical churn, thicker at large r',
+        '    float turb = sin(theta * 3.0 + uTime * 1.9 + aSeed.z * 43.0);',
+        '    float rt = r + turb * 0.045 * r;',
+        '    float y = (aSeed.z - 0.5) * (0.10 + 0.22 * r / uOuter) + turb * 0.05;',
+        '    vec3 pos = vec3(cos(theta) * rt, y, sin(theta) * rt);',
+        '',
+        '    float t = clamp((r - uInner) / (uOuter - uInner), 0.0, 1.0);',
+        '    vec3 col = temperature(t);',
+        '',
+        '    // gravitational heating ~ 1/r plus doppler-style beaming asymmetry',
+        '    float heat = pow(uInner / r, 1.35);',
+        '    vec3 tangent = normalize(vec3(-sin(theta), 0.0, cos(theta)));',
+        '    vec3 toCam = normalize(view_position - pos);',
+        '    float doppler = 1.0 + 1.1 * dot(tangent, toCam);',
+        '    col *= (0.30 + 2.4 * heat) * doppler;',
+        '',
+        '    // fade at birth and as matter crosses the ISCO',
+        '    float life = age / cycle;',
+        '    float alpha = smoothstep(0.0, 0.10, life) * (1.0 - smoothstep(0.72, 1.0, life));',
+        '    vColor = vec4(col, alpha * 0.85);',
+        '',
+        '    vec4 mvPosition = matrix_view * vec4(pos, 1.0);',
+        '    gl_Position = matrix_projection * mvPosition;',
+        '    float size = mix(0.045, 0.14, aSeed.z) * (1.0 + 0.8 * heat);',
+        '    gl_PointSize = clamp(uPointScale * size / max(-mvPosition.z, 0.1), 1.0, 72.0);',
+        '}'
+    ].join('\n');
+
+    var DISK_FS = [
+        'precision highp float;',
+        'varying vec4 vColor;',
+        'void main(void) {',
+        '    vec2 d = gl_PointCoord - vec2(0.5);',
+        '    float a = smoothstep(0.5, 0.08, length(d));',
+        '    gl_FragColor = vec4(vColor.rgb * (a * vColor.a), 1.0);', // premultiplied for ONE,ONE blend
+        '}'
+    ].join('\n');
+
+    var STAR_VS = [
+        'attribute vec3 aPos;',
+        'attribute vec3 aColor;',
+        'attribute float aSize;',
+        'uniform mat4 matrix_viewProjection;',
+        'uniform float uTime;',
+        'varying vec3 vColor;',
+        'void main(void) {',
+        '    gl_Position = matrix_viewProjection * vec4(aPos, 1.0);',
+        '    float tw = 0.72 + 0.28 * sin(uTime * (0.6 + fract(aSize * 7.31) * 2.2) + aPos.x * 12.9 + aPos.y * 7.7);',
+        '    vColor = aColor * tw;',
+        '    gl_PointSize = aSize;',
+        '}'
+    ].join('\n');
+
+    var STAR_FS = [
+        'precision highp float;',
+        'varying vec3 vColor;',
+        'void main(void) {',
+        '    vec2 d = gl_PointCoord - vec2(0.5);',
+        '    float a = smoothstep(0.5, 0.1, length(d));',
+        '    gl_FragColor = vec4(vColor * a, 1.0);',
+        '}'
+    ].join('\n');
+
+    // ---- generic single-draw-call points mesh helper ----
+    function createPointsMesh(formatDesc, count, fillFn) {
+        var format = new pc.VertexFormat(device, formatDesc);
+        var strideFloats = format.size / 4;
+        var data = new Float32Array(count * strideFloats);
+        fillFn(data, strideFloats);
+        var vb = new pc.VertexBuffer(device, format, count, pc.BUFFER_STATIC, data);
+        var mesh = new pc.Mesh(device);
+        mesh.vertexBuffer = vb;
+        mesh.primitive[0].type = pc.PRIMITIVE_POINTS;
+        mesh.primitive[0].base = 0;
+        mesh.primitive[0].count = count;
+        mesh.primitive[0].indexed = false;
+        return mesh;
+    }
+
+    function createPointsMaterial(attributes, vs, fs) {
+        var shader = new pc.Shader(device, { attributes: attributes, vshader: vs, fshader: fs });
+        var mat = new pc.Material();
+        mat.shader = shader;
+        mat.blendType = pc.BLEND_ADDITIVEALPHA; // ONE, ONE — pure additive energy
+        mat.depthWrite = false;
+        mat.cull = pc.CULLFACE_NONE;
+        return mat;
+    }
+
+    function spawnPointsEntity(name, mesh, material, halfExtents) {
+        mesh.aabb = new pc.BoundingBox(new pc.Vec3(0, 0, 0), halfExtents);
+        var e = new pc.Entity(name);
+        app.root.addChild(e);
+        e.addComponent('model', { type: 'sphere' }); // host component, mesh swapped below
+        var mi = e.model.meshInstances[0];
+        mi.mesh = mesh;
+        mi.material = material;
+        mi.cull = false;
+        return e;
+    }
+
+    // ---- Keplerian disk: 40,000 seeded points ----
+    var DISK_COUNT = 40000;
+    var diskMesh = createPointsMesh(
+        [{ semantic: pc.SEMANTIC_POSITION, components: 4, type: pc.TYPE_FLOAT32 }],
+        DISK_COUNT,
+        function (data, stride) {
+            for (var i = 0; i < DISK_COUNT; i++) {
+                var o = i * stride;
+                data[o]     = Math.random();
+                data[o + 1] = Math.random();
+                data[o + 2] = Math.random();
+                data[o + 3] = Math.random();
+            }
+        });
+    var diskMat = createPointsMaterial({ aSeed: pc.SEMANTIC_POSITION }, DISK_VS, DISK_FS);
+    diskMat.setParameter('uInner', 1.6);
+    diskMat.setParameter('uOuter', 9.0);
+    diskMat.setParameter('uInflow', 0.55);
+    diskMat.setParameter('uK', 6.0);
+    diskMat.setParameter('uTime', 0);
+    diskMat.setParameter('uPointScale', 1000);
+    spawnPointsEntity('KeplerianDisk', diskMesh, diskMat, new pc.Vec3(12, 3, 12));
+
+    // ======================================================================
+    // 8. Relativistic jets — two opposing collimated additive columns
+    // ======================================================================
+    var jetUp = new pc.Entity('JetUp');
+    app.root.addChild(jetUp);
+    jetUp.addComponent('particlesystem', {
+        autoPlay: true,
+        numParticles: 2500,
+        lifetime: 2.4,
+        rate: 1200,
+        loop: true,
+        preWarm: true,
+        emitterShape: pc.EMITTERSHAPE_SPHERE,
+        emitterRadius: 0.32,        // narrow foot -> highly collimated beam
+        emitterRadiusInner: 0,
+        // extreme vertical velocity, tiny lateral spread
+        localVelocityGraph:  new pc.CurveSet([[0, -0.6, 1, -0.6], [0, 40, 1, 48], [0, -0.6, 1, -0.6]]),
+        localVelocityGraph2: new pc.CurveSet([[0,  0.6, 1,  0.6], [0, 46, 1, 55], [0,  0.6, 1,  0.6]]),
+        radialSpeedGraph: new pc.Curve([0, 0, 1, 0]),
+        scaleGraph:  new pc.Curve([0, 0.55, 0.3, 0.32, 1, 0.10]),
+        scaleGraph2: new pc.Curve([0, 0.30, 0.3, 0.18, 1, 0.05]),
+        colorGraph: new pc.CurveSet([
+            [0, 1.00, 1, 0.25],
+            [0, 1.00, 1, 0.55],
+            [0, 1.00, 1, 1.00]
+        ]),
+        alphaGraph: new pc.Curve([0, 0, 0.06, 0.85, 0.55, 0.50, 1, 0]),
+        blendType: pc.BLEND_ADDITIVE,
+        colorMap: softTex,
+        intensity: 2.4,
+        stretch: 1.4,               // streak particles along motion
+        alignToMotion: true,
+        depthWrite: false,
+        depthSoftening: 0,
+        sort: pc.PARTICLESORT_NONE,
+        startAngle: 0,
+        startAngle2: 360,
+        rotationSpeedGraph: new pc.Curve([0, 0, 1, 0]),
+        lighting: false,
+        halfLambert: false,
+        initialVelocity: 0
+    });
+    var jetDown = jetUp.clone();
+    jetDown.name = 'JetDown';
+    jetDown.setEulerAngles(180, 0, 0); // flip the beam to the opposite pole
+    app.root.addChild(jetDown);
+
+    // ======================================================================
+    // 9. Background starfield — 9,000 stars, pc.PRIMITIVE_POINTS, 1 draw call
+    // ======================================================================
+    var STAR_COUNT = 9000;
+    var pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    var starMesh = createPointsMesh(
+        [
+            { semantic: pc.SEMANTIC_POSITION,  components: 3, type: pc.TYPE_FLOAT32 },
+            { semantic: pc.SEMANTIC_COLOR,     components: 3, type: pc.TYPE_FLOAT32 },
+            { semantic: pc.SEMANTIC_TEXCOORD0, components: 1, type: pc.TYPE_FLOAT32 }
+        ],
+        STAR_COUNT,
+        function (data, stride) {
+            for (var i = 0; i < STAR_COUNT; i++) {
+                var o = i * stride;
+                // uniform direction on a sphere shell
+                var u = Math.random() * 2 - 1;
+                var phi = Math.random() * Math.PI * 2;
+                var s = Math.sqrt(1 - u * u);
+                var radius = 420 + Math.random() * 520;
+                data[o]     = s * Math.cos(phi) * radius;
+                data[o + 1] = u * radius;
+                data[o + 2] = s * Math.sin(phi) * radius;
+                // color palette: mostly white, some blue / warm / faint red
+                var b = 0.35 + Math.random() * 0.65;
+                var p = Math.random();
+                var cr, cg, cb;
+                if (p < 0.60)      { cr = 1.00; cg = 1.00; cb = 1.00; }
+                else if (p < 0.80) { cr = 0.65; cg = 0.75; cb = 1.00; }
+                else if (p < 0.95) { cr = 1.00; cg = 0.80; cb = 0.55; }
+                else               { cr = 1.00; cg = 0.50; cb = 0.40; }
+                data[o + 3] = cr * b;
+                data[o + 4] = cg * b;
+                data[o + 5] = cb * b;
+                data[o + 6] = (1 + Math.random() * 2.4) * pixelRatio;
+            }
+        });
+    var starMat = createPointsMaterial(
+        { aPos: pc.SEMANTIC_POSITION, aColor: pc.SEMANTIC_COLOR, aSize: pc.SEMANTIC_TEXCOORD0 },
+        STAR_VS, STAR_FS);
+    starMat.setParameter('uTime', 0);
+    spawnPointsEntity('Starfield', starMesh, starMat, new pc.Vec3(950, 950, 950));
+
+    // ======================================================================
+    // 10. System driver entity (per-frame uniform updates)
+    // ======================================================================
+    var sys = new pc.Entity('System');
+    app.root.addChild(sys);
+    sys.addComponent('script');
+    var driver = sys.script.create('systemDriver');
+    driver.diskMaterial = diskMat;
+    driver.starMaterial = starMat;
+
+    // ======================================================================
+    // 11. FPS counter (HTML overlay) + readiness flag
+    // ======================================================================
+    var fpsEl = document.getElementById('fps');
+    var frames = 0;
+    var acc = 0;
+    var totalFrames = 0;
+    app.on('update', function (dt) {
+        frames++;
+        totalFrames++;
+        acc += dt;
+        if (acc >= 0.5) {
+            fpsEl.textContent = (frames / acc).toFixed(0);
+            frames = 0;
+            acc = 0;
+        }
+        if (totalFrames === 45) document.body.setAttribute('data-ready', '1');
+    });
+
+    // ======================================================================
+    // 12. Ignition
+    // ======================================================================
+    window.app = app; // console access for debugging / tweaking
+    app.start();
+})();
+</script>
+</body>
+</html>

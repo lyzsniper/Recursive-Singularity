@@ -1,0 +1,7 @@
+[2026-07-17T04:31:05.561Z] GET file:///C:/WorkSpace/llm-model/powerful-sun/kimi-sun/index.html → 200 (4ms, 47426B)
+[2026-07-17T04:31:05.573Z] GET https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&display=swap → pending (?ms, ?B)
+[2026-07-17T04:31:05.573Z] GET https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js → pending (?ms, ?B)
+[2026-07-17T04:31:05.573Z] GET https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js → pending (?ms, ?B)
+[2026-07-17T04:31:06.371Z] GET https://fonts.gstatic.com/s/orbitron/v35/yMJRMIlzdpvBhQQL_Qq7dy0.woff2 → pending (?ms, ?B)
+[2026-07-17T04:31:06.371Z] GET https://fonts.gstatic.com/s/rajdhani/v17/LDIxapCSOBg7S-QT7p4HM-Y.woff2 → pending (?ms, ?B)
+[2026-07-17T04:31:06.371Z] GET https://fonts.gstatic.com/s/rajdhani/v17/LDI2apCSOBg7S-QT7pbYF_Oreec.woff2 → pending (?ms, ?B)
