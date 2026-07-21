@@ -550,7 +550,7 @@
       '  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);',
       '  float sz = aSize;',
       opts.pulse ? '  sz *= 1.0 + 0.10 * sin(uTime * 0.7 + aSeed);' : '',
-      '  gl_PointSize = sz * uScale * uSizeMul / max(-mvPosition.z, 0.1);',
+      '  gl_PointSize = min(sz * uScale * uSizeMul / max(-mvPosition.z, 0.1), 110.0);',
       '  gl_Position = projectionMatrix * mvPosition;',
       '  #include <logdepthbuf_vertex>',
       '}'
@@ -609,7 +609,7 @@
     scene.add(points);
     var layer = {
       points: points, mat: mat, geo: geo, full: count,
-      baseOp: opts.opacity, rot: opts.rot || 0
+      baseOp: opts.opacity, rot: opts.rot || 0, isCore: !!opts.isCore
     };
     galaxyLayers.push(layer);
     return layer;
@@ -642,7 +642,7 @@
      ===================================================================== */
   buildLayer({
     count: 30000, tex: starTex, opacity: 1.0, renderOrder: 1, rot: 0.013,
-    blending: THREE.AdditiveBlending, pulse: false,
+    blending: THREE.AdditiveBlending, pulse: false, isCore: true,
     gen: function (i, o) {
       var rr, x, y, z;
       if (i < 1800) {                       // white-hot central hotspot
@@ -704,18 +704,18 @@
       var spread, cr, cg, cb, sz;
       if (role < 0.42) {                    // dense bright centerline
         spread = 5 + r * 0.045;
-        var b0 = 0.85 + Math.random() * 0.15;
+        var b0 = 0.88 + Math.random() * 0.16;
         cr = (0.82 + Math.random() * 0.10) * b0; cg = 0.88 * b0; cb = 1.00 * b0;
         sz = 2.2 + Math.random() * 2.6;
       } else if (role < 0.80) {             // cyan-blue mid cloud
         spread = 9 + r * 0.085;
         var p1 = Math.random();
-        cr = 0.42 + 0.25 * p1; cg = 0.62 + 0.18 * p1; cb = 1.00;
+        cr = 0.34 + 0.24 * p1; cg = 0.55 + 0.20 * p1; cb = 1.00;
         sz = 1.8 + Math.random() * 2.0;
       } else {                              // violet diffuse skirt
         spread = 15 + r * 0.15;
         var p2 = Math.random();
-        cr = 0.50 + 0.22 * p2; cg = 0.38 + 0.20 * p2; cb = 0.95;
+        cr = 0.48 + 0.24 * p2; cg = 0.30 + 0.18 * p2; cb = 0.98;
         sz = 2.6 + Math.random() * 2.8;
       }
       // inner-arm stars warm up toward the bulge
@@ -742,7 +742,7 @@
      when individual stars fall below one pixel.
      ===================================================================== */
   buildLayer({
-    count: 12000, tex: glowTex, opacity: 0.038, renderOrder: 1, rot: 0.011,
+    count: 12000, tex: glowTex, opacity: 0.046, renderOrder: 1, rot: 0.011,
     blending: THREE.AdditiveBlending, pulse: true,
     gen: function (i, o) {
       if (Math.random() < 0.22) {           // warm core envelope
@@ -899,7 +899,7 @@
      plus three streaks crossing the central bar.
      ===================================================================== */
   buildLayer({
-    count: 16000, tex: glowTex, opacity: 0.62, renderOrder: 2, rot: 0.011,
+    count: 16000, tex: glowTex, opacity: 0.68, renderOrder: 2, rot: 0.011,
     blending: THREE.NormalBlending, pulse: false,
     gen: function (i, o) {
       var p = Math.random();
@@ -940,7 +940,7 @@
      envelopes beneath the particle layers.
      ===================================================================== */
   var glowSprites = [];
-  function addGlowSprite(color, scale, opacity, x, y, z) {
+  function addGlowSprite(color, scale, opacity, x, y, z, isCore) {
     var sp = new THREE.Sprite(noTone(new THREE.SpriteMaterial({
       map: glowTex, color: color, transparent: true, opacity: opacity,
       blending: THREE.AdditiveBlending, depthWrite: false
@@ -949,12 +949,12 @@
     sp.position.set(x || 0, y || 0, z || 0);
     sp.renderOrder = 1;
     scene.add(sp);
-    glowSprites.push({ sp: sp, baseOp: opacity });
+    glowSprites.push({ sp: sp, baseOp: opacity, isCore: !!isCore });
     return sp;
   }
-  addGlowSprite(0xffdfae, 260, 0.32, 0, 0, 0);    // warm bulge glow
-  addGlowSprite(0xfff6e0, 110, 0.50, 0, 0, 0);    // white-hot hotspot
-  addGlowSprite(0x2a3f6e, 2500, 0.028, 0, 0, 0);  // faint galactic halo glow
+  addGlowSprite(0xffdfae, 260, 0.32, 0, 0, 0, true);   // warm bulge glow
+  addGlowSprite(0xfff6e0, 110, 0.50, 0, 0, 0, true);   // white-hot hotspot
+  addGlowSprite(0x2a3f6e, 2500, 0.028, 0, 0, 0);       // faint galactic halo glow
 
   /* =====================================================================
      GALACTIC CENTER — Sagittarius A*
@@ -968,10 +968,10 @@
   scene.add(blackHole);
 
   var photonGlow = new THREE.Sprite(noTone(new THREE.SpriteMaterial({
-    map: glowTex, color: 0xfff3d8, transparent: true, opacity: 0.9,
+    map: glowTex, color: 0xfff3d8, transparent: true, opacity: 0.25,
     blending: THREE.AdditiveBlending, depthWrite: false
   })));
-  photonGlow.scale.set(30, 30, 1);
+  photonGlow.scale.set(22, 22, 1);
   photonGlow.renderOrder = 2;
   scene.add(photonGlow);
 
@@ -1021,15 +1021,15 @@
       '  vec2 p1 = vec2(cos(swirl), sin(swirl)) * r * 0.22;',
       '  float n = fbm2(p1);',
       '  float streak = fbm2(vec2(swirl * 2.5, r * 0.5) + vec2(uTime * 0.03, 0.0));',
-      '  vec3 hot  = vec3(1.0, 0.96, 0.86);',
+      '  vec3 hot  = vec3(1.0, 0.88, 0.70);',
       '  vec3 mid  = vec3(1.0, 0.52, 0.16);',
       '  vec3 edge = vec3(0.40, 0.09, 0.03);',
       '  vec3 col = mix(hot, mid, smoothstep(0.02, 0.45, t));',
       '  col = mix(col, edge, smoothstep(0.45, 1.0, t));',
-      '  float bright = 0.55 + 0.8 * n + 0.4 * streak;',
+      '  float bright = 0.45 + 0.6 * n + 0.3 * streak;',
       '  float dop = 0.8 + 0.45 * sin(ang + 0.8);', // relativistic-beaming asymmetry
       '  float alpha = smoothstep(0.0, 0.10, t) * (1.0 - smoothstep(0.70, 1.0, t));',
-      '  gl_FragColor = vec4(col * bright * dop * 1.7, alpha);',
+      '  gl_FragColor = vec4(col * bright * dop * 1.05, alpha);',
       '}'
     ].join('\n'),
     transparent: true,
@@ -1038,7 +1038,7 @@
     blending: THREE.AdditiveBlending
   });
   var disk = new THREE.Mesh(new THREE.RingGeometry(12, 45, 128, 1), diskMat);
-  disk.rotation.set(-Math.PI / 2 + 0.12, 0, 0.18);
+  disk.rotation.set(-Math.PI / 2 + 0.35, 0, 0.18);
   disk.renderOrder = 2;
   scene.add(disk);
 
@@ -1101,7 +1101,7 @@
       '  vec3 vdir = normalize(vViewW);',
       '  float fres = abs(dot(nrm, vdir));',
       '  float ring = exp(-pow((fres - 0.30) * 4.5, 2.0));', // Einstein-ring shimmer at the limb
-      '  col += vec3(0.55, 0.75, 1.0) * ring * 1.2;',
+      '  col += vec3(0.55, 0.75, 1.0) * ring * 0.7;',
       '  float alpha = smoothstep(0.03, 0.30, fres);',
       '  gl_FragColor = vec4(col, alpha * 0.96);',
       '}'
@@ -1115,132 +1115,198 @@
   scene.add(lensSphere);
 
   /* =====================================================================
-     ORION NEBULA — raymarched volumetric fBM cloud in a sphere shell,
-     with a cluster of embedded young stars.
+     FAMOUS NEBULAE — eight cataloged volumes strung along the arms.
+     Each is a raymarched fBM cloud with its own palette, optional shell
+     geometry, glow sprite, embedded star cluster and atlas label.
      ===================================================================== */
-  var NEBULA_POS = new THREE.Vector3(-360, 30, 375);
-  var nebMat = new THREE.ShaderMaterial({
-    uniforms: {
-      uTime: { value: 0 },
-      uCenter: { value: NEBULA_POS },
-      uRadius: { value: 78 }
-    },
-    vertexShader: [
-      'varying vec3 vWorldPos;',
-      '#include <common>',
-      '#include <logdepthbuf_pars_vertex>',
-      'void main() {',
-      '  vec4 wp = modelMatrix * vec4(position, 1.0);',
-      '  vWorldPos = wp.xyz;',
-      '  vec4 mvPosition = viewMatrix * wp;',
-      '  gl_Position = projectionMatrix * mvPosition;',
-      '  #include <logdepthbuf_vertex>',
-      '}'
-    ].join('\n'),
-    fragmentShader: [
-      'uniform float uTime;',
-      'uniform vec3 uCenter;',
-      'uniform float uRadius;',
-      'varying vec3 vWorldPos;',
-      '#include <common>',
-      '#include <logdepthbuf_pars_fragment>',
-      'float hash13(vec3 p) {',
-      '  p = fract(p * 0.1031);',
-      '  p += dot(p, p.zyx + 31.32);',
-      '  return fract((p.x + p.y) * p.z);',
-      '}',
-      'float noise3(vec3 p) {',
-      '  vec3 i = floor(p);',
-      '  vec3 f = fract(p);',
-      '  vec3 u = f * f * (3.0 - 2.0 * f);',
-      '  return mix(',
-      '    mix(mix(hash13(i + vec3(0.0, 0.0, 0.0)), hash13(i + vec3(1.0, 0.0, 0.0)), u.x),',
-      '        mix(hash13(i + vec3(0.0, 1.0, 0.0)), hash13(i + vec3(1.0, 1.0, 0.0)), u.x), u.y),',
-      '    mix(mix(hash13(i + vec3(0.0, 0.0, 1.0)), hash13(i + vec3(1.0, 0.0, 1.0)), u.x),',
-      '        mix(hash13(i + vec3(0.0, 1.0, 1.0)), hash13(i + vec3(1.0, 1.0, 1.0)), u.x), u.y),',
-      '    u.z);',
-      '}',
-      'float fbm3(vec3 p) {',
-      '  float v = 0.0; float a = 0.5;',
-      '  for (int i = 0; i < 4; i++) {',
-      '    v += a * noise3(p);',
-      '    p = p * 2.03 + vec3(17.3, 9.1, 4.7);',
-      '    a *= 0.5;',
-      '  }',
-      '  return v;',
-      '}',
-      'float density(vec3 lp) {',
-      '  float r = length(lp);',
-      '  float fall = smoothstep(1.0, 0.2, r);',
-      '  if (fall <= 0.001) return 0.0;',
-      '  vec3 q = lp * 2.6;',
-      '  float w = fbm3(q * 0.7 + vec3(0.0, uTime * 0.015, 0.0));',
-      '  float d = fbm3(q + (w - 0.5) * 1.4 + vec3(uTime * 0.008, 0.0, 0.0));',
-      '  d = max(d - 0.38, 0.0) * 2.4;',
-      '  return d * fall;',
-      '}',
-      'void main() {',
-      '  #include <logdepthbuf_fragment>',
-      '  vec3 ro = cameraPosition;',
-      '  vec3 rd = normalize(vWorldPos - ro);',
-      '  vec3 oc = ro - uCenter;',
-      '  float b = dot(oc, rd);',
-      '  float c = dot(oc, oc) - uRadius * uRadius;',
-      '  float h = b * b - c;',
-      '  if (h < 0.0) discard;',
-      '  h = sqrt(h);',
-      '  float t0 = max(-b - h, 0.0);',
-      '  float t1 = -b + h;',
-      '  const int STEPS = 26;',
-      '  float dt = (t1 - t0) / float(STEPS);',
-      '  vec3 col = vec3(0.0);',
-      '  float t = t0 + dt * 0.5;',
-      '  for (int i = 0; i < STEPS; i++) {',
-      '    vec3 pos = ro + rd * t;',
-      '    vec3 lp = (pos - uCenter) / uRadius;',
-      '    float dens = density(lp);',
-      '    if (dens > 0.001) {',
-      '      float hue = fbm3(lp * 1.8 + vec3(4.2, 1.3, 7.7));',
-      '      vec3 nc = mix(vec3(0.10, 0.25, 0.95), vec3(0.75, 0.20, 0.85), hue);',
-      '      nc = mix(nc, vec3(1.0, 0.45, 0.15), clamp(dens * dens * 3.0, 0.0, 0.75));',
-      '      col += nc * dens * dt * 0.06;',
-      '    }',
-      '    t += dt;',
-      '  }',
-      '  float core = exp(-pow(length(cross(uCenter - ro, rd)) / (uRadius * 0.35), 2.0));',
-      '  col += vec3(0.9, 0.75, 1.0) * core * 0.10;',
-      '  gl_FragColor = vec4(col * 1.6, 1.0);',
-      '}'
-    ].join('\n'),
-    transparent: true,
-    depthWrite: false,
-    side: THREE.BackSide,
-    blending: THREE.AdditiveBlending
-  });
-  var nebMesh = new THREE.Mesh(new THREE.SphereGeometry(78, 48, 48), nebMat);
-  nebMesh.position.copy(NEBULA_POS);
-  nebMesh.renderOrder = 2;
-  scene.add(nebMesh);
+  var NEBULA_POS = new THREE.Vector3(-360, 30, 375); // Orion Nebula (POI anchor)
 
-  // Embedded young stars inside the nebula volume.
-  (function () {
-    var N = 70, pos = new Float32Array(N * 3), col = new Float32Array(N * 3), siz = new Float32Array(N);
-    for (var i = 0; i < N; i++) {
-      var rr = 70 * Math.pow(Math.random(), 1.6);
-      var th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
-      pos[i * 3] = NEBULA_POS.x + rr * Math.sin(ph) * Math.cos(th);
-      pos[i * 3 + 1] = NEBULA_POS.y + rr * Math.cos(ph);
-      pos[i * 3 + 2] = NEBULA_POS.z + rr * Math.sin(ph) * Math.sin(th);
-      var p = Math.random(), b = 0.9 + Math.random() * 0.5;
-      if (p < 0.5) { col[i * 3] = b; col[i * 3 + 1] = b * 0.95; col[i * 3 + 2] = b; }
-      else if (p < 0.8) { col[i * 3] = b * 0.7; col[i * 3 + 1] = b * 0.85; col[i * 3 + 2] = b; }
-      else { col[i * 3] = b; col[i * 3 + 1] = b * 0.7; col[i * 3 + 2] = b * 0.9; }
-      siz[i] = 1.5 + Math.random() * 3.0;
+  var nebulaVert = [
+    'varying vec3 vWorldPos;',
+    '#include <common>',
+    '#include <logdepthbuf_pars_vertex>',
+    'void main() {',
+    '  vec4 wp = modelMatrix * vec4(position, 1.0);',
+    '  vWorldPos = wp.xyz;',
+    '  vec4 mvPosition = viewMatrix * wp;',
+    '  gl_Position = projectionMatrix * mvPosition;',
+    '  #include <logdepthbuf_vertex>',
+    '}'
+  ].join('\n');
+  var nebulaFrag = [
+    'uniform float uTime;',
+    'uniform vec3 uCenter;',
+    'uniform float uRadius;',
+    'uniform float uSeed;',
+    'uniform float uShell;',
+    'uniform float uEmission;',
+    'uniform vec3 uColA;',
+    'uniform vec3 uColB;',
+    'uniform vec3 uColCore;',
+    'varying vec3 vWorldPos;',
+    '#include <common>',
+    '#include <logdepthbuf_pars_fragment>',
+    'float hash13(vec3 p) {',
+    '  p = fract(p * 0.1031);',
+    '  p += dot(p, p.zyx + 31.32);',
+    '  return fract((p.x + p.y) * p.z);',
+    '}',
+    'float noise3(vec3 p) {',
+    '  vec3 i = floor(p);',
+    '  vec3 f = fract(p);',
+    '  vec3 u = f * f * (3.0 - 2.0 * f);',
+    '  return mix(',
+    '    mix(mix(hash13(i + vec3(0.0, 0.0, 0.0)), hash13(i + vec3(1.0, 0.0, 0.0)), u.x),',
+    '        mix(hash13(i + vec3(0.0, 1.0, 0.0)), hash13(i + vec3(1.0, 1.0, 0.0)), u.x), u.y),',
+    '    mix(mix(hash13(i + vec3(0.0, 0.0, 1.0)), hash13(i + vec3(1.0, 0.0, 1.0)), u.x),',
+    '        mix(hash13(i + vec3(0.0, 1.0, 1.0)), hash13(i + vec3(1.0, 1.0, 1.0)), u.x), u.y),',
+    '    u.z);',
+    '}',
+    'float fbm3(vec3 p) {',
+    '  float v = 0.0; float a = 0.5;',
+    '  for (int i = 0; i < 4; i++) {',
+    '    v += a * noise3(p);',
+    '    p = p * 2.03 + vec3(17.3, 9.1, 4.7);',
+    '    a *= 0.5;',
+    '  }',
+    '  return v;',
+    '}',
+    'float density(vec3 lp) {',
+    '  float r = length(lp);',
+    '  float fall = mix(smoothstep(1.0, 0.2, r), exp(-pow((r - 0.55) * 3.2, 2.0)), uShell);',
+    '  if (fall <= 0.001) return 0.0;',
+    '  vec3 q = lp * 2.6 + vec3(uSeed * 0.37, uSeed * 0.53, uSeed * 0.71);',
+    '  float w = fbm3(q * 0.7 + vec3(0.0, uTime * 0.015, 0.0));',
+    '  float d = fbm3(q + (w - 0.5) * 1.4 + vec3(uTime * 0.008, 0.0, 0.0));',
+    '  d = max(d - 0.41, 0.0) * 2.4;',
+    '  return d * fall;',
+    '}',
+    'void main() {',
+    '  #include <logdepthbuf_fragment>',
+    '  vec3 ro = cameraPosition;',
+    '  vec3 rd = normalize(vWorldPos - ro);',
+    '  vec3 oc = ro - uCenter;',
+    '  float b = dot(oc, rd);',
+    '  float c = dot(oc, oc) - uRadius * uRadius;',
+    '  float h = b * b - c;',
+    '  if (h < 0.0) discard;',
+    '  h = sqrt(h);',
+    '  float t0 = max(-b - h, 0.0);',
+    '  float t1 = -b + h;',
+    '  const int STEPS = 26;',
+    '  float dt = (t1 - t0) / float(STEPS);',
+    '  vec3 col = vec3(0.0);',
+    '  float t = t0 + dt * 0.5;',
+    '  for (int i = 0; i < STEPS; i++) {',
+    '    vec3 pos = ro + rd * t;',
+    '    vec3 lp = (pos - uCenter) / uRadius;',
+    '    float dens = density(lp);',
+    '    if (dens > 0.001) {',
+    '      float hue = fbm3(lp * 1.8 + vec3(uSeed));',
+    '      vec3 nc = mix(uColA, uColB, hue);',
+    '      nc = mix(nc, uColCore, clamp(dens * dens * 3.0, 0.0, 0.75));',
+    '      col += nc * dens * dt * 0.028;',
+    '    }',
+    '    t += dt;',
+    '  }',
+    '  float core = exp(-pow(length(cross(uCenter - ro, rd)) / (uRadius * 0.35), 2.0));',
+    '  col += uColCore * core * 0.05;',
+    '  col = 1.0 - exp(-col * 1.0);', // soft shoulder: compress the hot core, keep the wisps
+    '  gl_FragColor = vec4(col * uEmission, 1.0);',
+    '}'
+  ].join('\n');
+
+  var NEBULAS = [
+    { name: 'ORION NEBULA', pos: NEBULA_POS, radius: 78, seed: 3.1, shell: 0, emission: 1.15,
+      colA: [0.10, 0.25, 0.95], colB: [0.75, 0.20, 0.85], colCore: [1.00, 0.45, 0.15], glow: 0xb07fff },
+    { name: 'EAGLE NEBULA', arm: 1, r: 660, radius: 64, seed: 13.7, shell: 0, emission: 1.4,
+      colA: [0.05, 0.55, 0.60], colB: [0.85, 0.60, 0.20], colCore: [1.00, 0.85, 0.45], glow: 0x6fd8c0 },
+    { name: 'CARINA NEBULA', arm: 2, r: 720, radius: 84, seed: 27.1, shell: 0, emission: 1.5,
+      colA: [0.75, 0.15, 0.45], colB: [0.95, 0.45, 0.15], colCore: [1.00, 0.75, 0.40], glow: 0xff7f9a },
+    { name: 'LAGOON NEBULA', arm: 0, r: 430, radius: 62, seed: 41.3, shell: 0, emission: 1.5,
+      colA: [0.85, 0.20, 0.35], colB: [0.45, 0.20, 0.85], colCore: [1.00, 0.60, 0.45], glow: 0xff8fa8 },
+    { name: 'TRIFID NEBULA', arm: 0, r: 505, radius: 52, seed: 55.9, shell: 0, emission: 1.45,
+      colA: [0.80, 0.18, 0.30], colB: [0.20, 0.45, 0.95], colCore: [0.85, 0.90, 1.00], glow: 0xd88fff },
+    { name: 'CRAB NEBULA', arm: 3, r: 880, radius: 46, seed: 69.2, shell: 0, emission: 1.35,
+      colA: [0.25, 0.55, 0.95], colB: [0.85, 0.35, 0.20], colCore: [0.90, 0.95, 1.00], glow: 0x8fc8ff },
+    { name: 'RING NEBULA', arm: 2, r: 545, radius: 34, seed: 83.4, shell: 1, emission: 1.5,
+      colA: [0.15, 0.75, 0.60], colB: [0.35, 0.35, 0.90], colCore: [0.95, 0.98, 1.00], glow: 0x7fffd8 },
+    { name: 'ROSETTE NEBULA', arm: 1, r: 810, radius: 70, seed: 97.6, shell: 0, emission: 1.4,
+      colA: [0.85, 0.20, 0.30], colB: [0.90, 0.45, 0.55], colCore: [1.00, 0.80, 0.70], glow: 0xff9fb0 }
+  ];
+
+  var nebulaMats = [];
+  var nebGlowSprites = [];
+  var nebStarPos = [], nebStarCol = [], nebStarSiz = [];
+
+  NEBULAS.forEach(function (nb, idx) {
+    if (!nb.pos) {
+      var th = nb.arm * (Math.PI * 2 / ARM_COUNT) + nb.r * WIND;
+      nb.pos = new THREE.Vector3(Math.cos(th) * nb.r + 25, 12 + (idx % 3) * 14, Math.sin(th) * nb.r + 25);
     }
+    var mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uCenter: { value: nb.pos },
+        uRadius: { value: nb.radius },
+        uSeed: { value: nb.seed },
+        uShell: { value: nb.shell },
+        uEmission: { value: nb.emission },
+        uColA: { value: new THREE.Vector3(nb.colA[0], nb.colA[1], nb.colA[2]) },
+        uColB: { value: new THREE.Vector3(nb.colB[0], nb.colB[1], nb.colB[2]) },
+        uColCore: { value: new THREE.Vector3(nb.colCore[0], nb.colCore[1], nb.colCore[2]) }
+      },
+      vertexShader: nebulaVert,
+      fragmentShader: nebulaFrag,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending
+    });
+    var mesh = new THREE.Mesh(new THREE.SphereGeometry(nb.radius, 40, 40), mat);
+    mesh.position.copy(nb.pos);
+    mesh.renderOrder = 2;
+    scene.add(mesh);
+    nebulaMats.push(mat);
+
+    var glow = new THREE.Sprite(noTone(new THREE.SpriteMaterial({
+      map: glowTex, color: nb.glow, transparent: true, opacity: 0.18,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })));
+    glow.position.copy(nb.pos);
+    glow.scale.set(nb.radius * 1.5, nb.radius * 1.5, 1);
+    glow.renderOrder = 1;
+    scene.add(glow);
+    nebGlowSprites.push({ sp: glow, baseOp: 0.18 });
+
+    for (var s = 0; s < 26; s++) {
+      var rr = nb.radius * 0.9 * Math.pow(Math.random(), 1.6);
+      var sth = Math.random() * Math.PI * 2, sph = Math.acos(2 * Math.random() - 1);
+      nebStarPos.push(
+        nb.pos.x + rr * Math.sin(sph) * Math.cos(sth),
+        nb.pos.y + rr * Math.cos(sph),
+        nb.pos.z + rr * Math.sin(sph) * Math.sin(sth)
+      );
+      var pb = 0.9 + Math.random() * 0.5, pr = Math.random();
+      if (pr < 0.5) nebStarCol.push(pb, pb * 0.95, pb);
+      else if (pr < 0.8) nebStarCol.push(pb * 0.7, pb * 0.85, pb);
+      else nebStarCol.push(pb, pb * 0.7, pb * 0.9);
+      nebStarSiz.push(1.5 + Math.random() * 3.0);
+    }
+
+    var lbl = makeLabel(nb.name);
+    lbl.position.copy(nb.pos).add(new THREE.Vector3(0, nb.radius + 24, 0));
+    lbl.scale.set(52, 11.5, 1);
+    scene.add(lbl);
+  });
+
+  // All nebulae's embedded young stars, merged into a single draw call.
+  (function () {
+    var N = nebStarSiz.length;
     var geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
-    geo.setAttribute('aSize', new THREE.BufferAttribute(siz, 1));
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nebStarPos), 3));
+    geo.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array(nebStarCol), 3));
+    geo.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array(nebStarSiz), 1));
     var mat = makePointsMaterial({ tex: starTex, opacity: 1.0, blending: THREE.AdditiveBlending, pulse: false });
     var pts = new THREE.Points(geo, mat);
     pts.frustumCulled = false;
@@ -1248,15 +1314,6 @@
     scene.add(pts);
     galaxyLayers.push({ points: pts, mat: mat, geo: geo, full: N, baseOp: 1.0, rot: 0 });
   })();
-
-  var nebGlow = new THREE.Sprite(noTone(new THREE.SpriteMaterial({
-    map: glowTex, color: 0xb07fff, transparent: true, opacity: 0.28,
-    blending: THREE.AdditiveBlending, depthWrite: false
-  })));
-  nebGlow.position.copy(NEBULA_POS);
-  nebGlow.scale.set(150, 150, 1);
-  nebGlow.renderOrder = 1;
-  scene.add(nebGlow);
 
   /* =====================================================================
      THE SOLAR SYSTEM — miniature planetary system in the Orion Arm.
@@ -1278,17 +1335,17 @@
   solGroup.add(sun);
 
   var sunGlow = new THREE.Sprite(noTone(new THREE.SpriteMaterial({
-    map: glowTex, color: 0xffdca6, transparent: true, opacity: 0.9,
+    map: glowTex, color: 0xffdca6, transparent: true, opacity: 0.7,
     blending: THREE.AdditiveBlending, depthWrite: false
   })));
-  sunGlow.scale.set(62, 62, 1);
+  sunGlow.scale.set(40, 40, 1);
   solGroup.add(sunGlow);
 
   var sunCorona = new THREE.Sprite(noTone(new THREE.SpriteMaterial({
-    map: glowTex, color: 0xff9a4d, transparent: true, opacity: 0.35,
+    map: glowTex, color: 0xff9a4d, transparent: true, opacity: 0.25,
     blending: THREE.AdditiveBlending, depthWrite: false
   })));
-  sunCorona.scale.set(130, 130, 1);
+  sunCorona.scale.set(80, 80, 1);
   solGroup.add(sunCorona);
 
   var orbitMat = noTone(new THREE.LineBasicMaterial({ color: 0x4a5a7a, transparent: true, opacity: 0.35 }));
@@ -1390,9 +1447,6 @@
   var lblBH = makeLabel('SAGITTARIUS A*');
   lblBH.position.set(0, 46, 0);
   scene.add(lblBH);
-  var lblNeb = makeLabel('ORION NEBULA');
-  lblNeb.position.copy(NEBULA_POS).add(new THREE.Vector3(0, 100, 0));
-  scene.add(lblNeb);
   var lblSol = makeLabel('SOLAR SYSTEM');
   lblSol.position.copy(SOL_POS).add(new THREE.Vector3(0, 34, 0));
   scene.add(lblSol);
@@ -1428,7 +1482,7 @@
     center: {
       name: 'Sagittarius A*',
       type: 'SUPERMASSIVE BLACK HOLE',
-      pos: new THREE.Vector3(95, 55, 135),
+      pos: new THREE.Vector3(70, 42, 100),
       target: new THREE.Vector3(0, 0, 0),
       stats: [['Mass', '4.3 × 10⁶ M☉'], ['Schwarzschild Ø', '≈ 23.6 M km'], ['Distance from Sol', '26,000 ly']],
       desc: 'The compact radio source anchoring the Milky Way — a black hole weighing four million Suns. Infalling plasma forms an incandescent accretion disk orbiting at nearly light speed, while gravity bends the starlight behind it into a shimmering Einstein ring.'
@@ -1436,7 +1490,7 @@
     nebula: {
       name: 'Orion Nebula',
       type: 'EMISSION NEBULA · M42',
-      pos: new THREE.Vector3(-240, 60, 300),
+      pos: new THREE.Vector3(-220, 80, 250),
       target: NEBULA_POS.clone(),
       stats: [['Diameter', '≈ 24 ly'], ['Distance from Sol', '1,344 ly'], ['Type', 'Stellar nursery']],
       desc: 'A vast cloud of ionized hydrogen where new stars are being born. This volume is raymarched in real time: fractional Brownian motion carves dense pillars of gas and dust, glowing blue-violet where young hot stars excite the surrounding plasma.'
@@ -1444,7 +1498,7 @@
     sol: {
       name: 'Solar System',
       type: 'PLANETARY SYSTEM · ORION ARM',
-      pos: new THREE.Vector3(700, 62, 545),
+      pos: new THREE.Vector3(700, 48, 505),
       target: SOL_POS.clone(),
       stats: [['Star', 'Sol (G2V)'], ['Planets', '8'], ['Age', '4.6 × 10⁹ yr']],
       desc: 'Our home system, tucked into the Orion–Cygnus spur some 26,000 light-years from the galactic core. The miniature rendering includes the glowing Sun, a procedural Earth with blue oceans and green continents, and Saturn with its banded ring system.'
@@ -1455,7 +1509,7 @@
       pos: new THREE.Vector3(0, 900, 1750), // recomputed by setMacroCamera()
       target: new THREE.Vector3(0, 0, 0),
       stats: [['Diameter', '≈ 105,700 ly'], ['Stars', '100 – 400 billion'], ['Age', '13.6 × 10⁹ yr']],
-      desc: 'A barred spiral galaxy rendered as more than 150,000 particles in layered systems: a dense warm core and central bar, four logarithmic spiral arms, diffuse ionized clouds, hundreds of stellar nurseries, and dark dust lanes silhouetted against the luminous ribbons.'
+      desc: 'A barred spiral galaxy rendered as more than 150,000 particles in layered systems: a dense warm core and central bar, four logarithmic spiral arms, diffuse ionized clouds, hundreds of stellar nurseries, dark dust lanes silhouetted against the luminous ribbons, and eight cataloged nebulae — Orion, Eagle, Carina, Lagoon, Trifid, Crab, Ring and Rosette — glowing along the arms.'
     }
   };
   POIS.macro.pos = setMacroCamera();
@@ -1464,7 +1518,7 @@
   // and orbit-distance clamps.
   var VIEW = {
     macro:  { galaxy: 1.00, bloom: 1.05, sol: 0, minD: 350, maxD: Math.max(2800, POIS.macro.pos.length() * 1.25) },
-    center: { galaxy: 0.08, bloom: 1.25, sol: 0, minD: 30,  maxD: 500 },
+    center: { galaxy: 0.05, bloom: 0.70, sol: 0, minD: 30,  maxD: 500 },
     nebula: { galaxy: 0.30, bloom: 1.15, sol: 0, minD: 30,  maxD: 700 },
     sol:    { galaxy: 0.30, bloom: 1.00, sol: 1, minD: 6,   maxD: 260 }
   };
@@ -1478,12 +1532,16 @@
     cur.bloom += (tgt.bloom - cur.bloom) * k;
     cur.sol += (tgt.sol - cur.sol) * k;
     for (var i = 0; i < galaxyLayers.length; i++) {
-      galaxyLayers[i].mat.uniforms.uOpacity.value = galaxyLayers[i].baseOp * cur.galaxy;
+      var Li = galaxyLayers[i];
+      Li.mat.uniforms.uOpacity.value = Li.baseOp * cur.galaxy * (Li.isCore ? cur.galaxy : 1);
     }
     for (var j = 0; j < glowSprites.length; j++) {
-      glowSprites[j].sp.material.opacity = glowSprites[j].baseOp * cur.galaxy;
+      var gj = glowSprites[j];
+      gj.sp.material.opacity = gj.baseOp * cur.galaxy * (gj.isCore ? cur.galaxy : 1);
     }
-    nebGlow.material.opacity = 0.28 * (0.35 + 0.65 * cur.galaxy);
+    for (var ng = 0; ng < nebGlowSprites.length; ng++) {
+      nebGlowSprites[ng].sp.material.opacity = nebGlowSprites[ng].baseOp * (0.35 + 0.65 * cur.galaxy);
+    }
     solBeacon.material.opacity = 0.5 * cur.galaxy;
     bloomPass.strength = cur.bloom;
     solGroup.visible = cur.sol > 0.02;
@@ -1604,7 +1662,7 @@
   var dbs = new THREE.Vector2();
   function updateScales() {
     renderer.getDrawingBufferSize(dbs);
-    rt.setSize(dbs.x, dbs.y);
+    rt.setSize(Math.max(2, dbs.x * 0.5 | 0), Math.max(2, dbs.y * 0.5 | 0)); // half-res lens pass
     lensMat.uniforms.uResolution.value.copy(dbs);
     var uScale = dbs.y / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)));
     for (var i = 0; i < galaxyLayers.length; i++) {
@@ -1653,10 +1711,10 @@
       L.points.rotation.y += dt * L.rot;
       L.mat.uniforms.uTime.value = t;
     }
-    nebMat.uniforms.uTime.value = t;
+    for (var nm = 0; nm < nebulaMats.length; nm++) nebulaMats[nm].uniforms.uTime.value = t;
     diskMat.uniforms.uTime.value = t;
 
-    var s = 62 + Math.sin(t * 1.7) * 2.5;
+    var s = 40 + Math.sin(t * 1.7) * 1.8;
     sunGlow.scale.set(s, s, 1);
 
     for (var p = 0; p < planets.length; p++) {

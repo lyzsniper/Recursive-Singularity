@@ -51,7 +51,7 @@
 <canvas id="application-canvas"></canvas>
 <div id="hud">
   <div class="title">SINGULARITY // ACTIVE ACCRETION</div>
-  <div class="stats"><span id="fps">--</span> FPS &nbsp;&middot;&nbsp; 74,000 PARTICLES &nbsp;&middot;&nbsp; <span id="api">WEBGL</span></div>
+  <div class="stats"><span id="fps">--</span> FPS &nbsp;&middot;&nbsp; <span id="pcount">--</span> PARTICLES &nbsp;&middot;&nbsp; <span id="api">WEBGL</span></div>
 </div>
 <div id="hint">DRAG &mdash; ORBIT &nbsp;&middot;&nbsp; WHEEL &mdash; ZOOM &nbsp;&middot;&nbsp; RIGHT-DRAG &mdash; PAN</div>
 <div id="fallback">PlayCanvas engine failed to load (network / CDN unreachable).</div>
@@ -107,7 +107,6 @@
         return tex;
     }
 
-    var softTex = makeRadialTexture(64,  [[0, 1], [0.25, 0.70], [0.60, 0.18], [1, 0]]);
     var glowTex = makeRadialTexture(256, [[0, 1], [0.18, 0.85], [0.45, 0.28], [0.75, 0.06], [1, 0]]);
 
     // ======================================================================
@@ -338,7 +337,7 @@
     var SystemDriver = pc.createScript('systemDriver');
     SystemDriver.prototype.initialize = function () {
         this.time = 0;
-        this.diskMaterial = null; // wired from main scope
+        this.pointMaterials = []; // wired from main scope (uTime + uPointScale)
         this.starMaterial = null;
         this.cameraEntity = null;
     };
@@ -346,11 +345,12 @@
         this.time += dt;
         if (!this.cameraEntity) this.cameraEntity = this.app.root.findByName('Camera');
         if (!this.cameraEntity) return;
-        if (this.diskMaterial) {
-            this.diskMaterial.setParameter('uTime', this.time);
-            // gl_PointSize = uPointScale * worldSize / viewDepth  (device pixels)
-            var proj = this.cameraEntity.camera.projectionMatrix;
-            this.diskMaterial.setParameter('uPointScale', proj.data[5] * this.app.graphicsDevice.height * 0.5);
+        // gl_PointSize = uPointScale * worldSize / viewDepth  (device pixels)
+        var proj = this.cameraEntity.camera.projectionMatrix;
+        var pointScale = proj.data[5] * this.app.graphicsDevice.height * 0.5;
+        for (var i = 0; i < this.pointMaterials.length; i++) {
+            this.pointMaterials[i].setParameter('uTime', this.time);
+            this.pointMaterials[i].setParameter('uPointScale', pointScale);
         }
         if (this.starMaterial) {
             this.starMaterial.setParameter('uTime', this.time);
@@ -400,22 +400,32 @@
         '    vec2 dir = d / r;',
         '',
         '    // frame-dragging swirl, stronger near the singularity',
-        '    float swirl = 0.30 * uRadius / (r + uRadius * 0.6);',
+        '    float swirl = uStrength * 0.24 * uRadius / (r + uRadius * 0.8);',
         '    float cs = cos(swirl);',
         '    float sn = sin(swirl);',
-        '    vec2 sd = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);',
+        '    vec2 sdir = vec2(dir.x * cs - dir.y * sn, dir.x * sn + dir.y * cs);',
         '',
-        '    // gravitational bending with 1/r^2 falloff; bend == 1 at the Einstein radius',
-        '    float rr = max(r, uRadius * 0.05);',
-        '    float bend = uStrength * uRadius * uRadius / (rr * rr);',
-        '    bend = min(bend, 4.0);',
-        '    vec2 lensed = sd * (1.0 - bend);',
+        '    // gravitational deflection: a ray passing at radius r picks up light',
+        '    // from radius r + R^2/r. Continuous everywhere (minimum 2R at r = R);',
+        '    // the fold at r = R is the primary/secondary image pair. Unlike a',
+        '    // (1 - bend) mapping it never crosses zero -> no ring artifacts.',
+        '    float bend = uStrength * uRadius * uRadius / r;',
+        '    float rl = r + bend;',
+        '',
+        '    // photons skimming the capture zone wrap around the hole: rotate the',
+        '    // sample direction up to pi as r -> 0. This is what paints the far',
+        '    // side of the disk as arcs above and below the shadow.',
+        '    float wrap = uStrength * 2.5 * pow(max(1.0 - r / uRadius, 0.0), 2.0);',
+        '    float wc = cos(wrap);',
+        '    float ws = sin(wrap);',
+        '    vec2 wdir = vec2(sdir.x * wc - sdir.y * ws, sdir.x * ws + sdir.y * wc);',
+        '    vec2 lensed = wdir * rl;',
         '',
         '    vec2 sampleUv = uCenter + vec2(lensed.x / uAspect, lensed.y);',
         '    sampleUv = clamp(sampleUv, vec2(0.001), vec2(0.999));',
         '',
         '    // chromatic aberration, amplified by the bending field',
-        '    float ca = 0.0012 + 0.004 * bend;',
+        '    float ca = 0.0012 + 0.004 * min(bend, 3.0);',
         '    vec2 caOff = vec2(dir.x / uAspect, dir.y) * ca;',
         '    vec3 col;',
         '    col.r = texture2D(uColorBuffer, clamp(sampleUv + caOff, vec2(0.001), vec2(0.999))).r;',
@@ -473,7 +483,9 @@
         scope.resolve('uHorizon').setValue(this.horizon);
         scope.resolve('uStrength').setValue(this.strength);
         scope.resolve('uTime').setValue(this.time);
-        pc.drawQuadWithShader(this.device, outputTarget, this.shader, rect);
+        // NOTE: rect intentionally NOT passed through — the legacy queue hands us a
+        // normalized (0..1) rect while drawQuadWithShader expects pixels (1.75 quirk).
+        pc.drawQuadWithShader(this.device, outputTarget, this.shader);
     };
 
     // ======================================================================
@@ -517,7 +529,7 @@
     var glowMat = new pc.StandardMaterial();
     glowMat.diffuse.set(0, 0, 0);
     glowMat.specular.set(0, 0, 0);
-    glowMat.emissive.set(1.6, 1.35, 1.05);
+    glowMat.emissive.set(0.85, 0.70, 0.50);
     glowMat.emissiveMap = glowTex;
     glowMat.useLighting = false;
     glowMat.blendType = pc.BLEND_ADDITIVE;
@@ -525,65 +537,137 @@
     glowMat.cull = pc.CULLFACE_NONE;
     glowMat.update();
     glow.model.meshInstances[0].material = glowMat;
-    glow.setLocalScale(9, 9, 9);
+    glow.setLocalScale(3.4, 3.4, 3.4);
     glow.addComponent('script');
     glow.script.create('billboard');
 
     // ======================================================================
-    // 6. Accretion disk — pc.ParticleSystemComponent, 20,000 particles
-    //    Inward radial pull (negative radialSpeed) + temperature colorGraph
-    //    (dull red at birth/outer -> fierce orange -> white-blue at death/inner)
+    // 6. Point-sprite helpers + accretion haze layer.
+    //    NOTE: pc.ParticleSystemComponent is broken in the pinned 1.75 build
+    //    (emitters simulate but never rasterize, CPU and GPU paths alike),
+    //    so every particle layer here is a hand-rolled GPU point mesh:
+    //    one vertex buffer, one draw call, all motion in the vertex shader.
     // ======================================================================
-    var diskPS = new pc.Entity('AccretionDiskPS');
-    app.root.addChild(diskPS);
-    diskPS.addComponent('particlesystem', {
-        autoPlay: true,
-        numParticles: 20000,
-        lifetime: 7,
-        rate: 3200,                 // 3200/s * 7s lifetime keeps the 20k pool saturated
-        loop: true,
-        preWarm: true,
-        emitterShape: pc.EMITTERSHAPE_BOX,
-        emitterExtents: new pc.Vec3(8, 0.06, 8), // razor-thin slab
-        // inward radial pull, accelerating as matter falls toward the hole
-        radialSpeedGraph:  new pc.Curve([0, -0.35, 0.5, -1.1, 1, -2.6]),
-        radialSpeedGraph2: new pc.Curve([0, -0.15, 0.5, -0.7, 1, -1.8]),
-        // turbulent local jitter (per-particle random between graph and graph2)
-        localVelocityGraph:  new pc.CurveSet([[0, -0.45, 1, -0.45], [0, -0.07, 1, -0.07], [0, -0.45, 1, -0.45]]),
-        localVelocityGraph2: new pc.CurveSet([[0,  0.45, 1,  0.45], [0,  0.07, 1,  0.07], [0,  0.45, 1,  0.45]]),
-        rotationSpeedGraph:  new pc.Curve([0, 30, 1, 140]),
-        rotationSpeedGraph2: new pc.Curve([0, -30, 1, -140]),
-        scaleGraph:  new pc.Curve([0, 0.30, 0.6, 0.24, 1, 0.10]),
-        scaleGraph2: new pc.Curve([0, 0.16, 0.6, 0.13, 1, 0.05]),
-        // temperature ramp over lifetime: particles are born at the cold outer
-        // rim and die at the white-hot inner rim (inward drift makes age ~ radius)
-        colorGraph: new pc.CurveSet([
-            [0, 0.50, 0.45, 1.00, 1, 0.95],
-            [0, 0.09, 0.45, 0.52, 1, 0.96],
-            [0, 0.04, 0.45, 0.14, 1, 1.00]
-        ]),
-        colorGraph2: new pc.CurveSet([
-            [0, 0.38, 0.45, 0.85, 1, 0.85],
-            [0, 0.06, 0.45, 0.40, 1, 0.85],
-            [0, 0.03, 0.45, 0.10, 1, 0.90]
-        ]),
-        // alpha fade in/out over lifetime
-        alphaGraph:  new pc.Curve([0, 0, 0.10, 0.55, 0.70, 0.38, 1, 0]),
-        alphaGraph2: new pc.Curve([0, 0, 0.10, 0.32, 0.70, 0.22, 1, 0]),
-        blendType: pc.BLEND_ADDITIVE,
-        colorMap: softTex,
-        intensity: 1.5,
-        depthWrite: false,
-        depthSoftening: 0,
-        sort: pc.PARTICLESORT_NONE,
-        startAngle: 0,
-        startAngle2: 360,
-        stretch: 0,
-        alignToMotion: false,
-        lighting: false,
-        halfLambert: false,
-        initialVelocity: 0
-    });
+
+    // ---- generic single-draw-call points mesh helper ----
+    function createPointsMesh(formatDesc, count, fillFn) {
+        var format = new pc.VertexFormat(device, formatDesc);
+        var strideFloats = format.size / 4;
+        var data = new Float32Array(count * strideFloats);
+        fillFn(data, strideFloats);
+        var vb = new pc.VertexBuffer(device, format, count, pc.BUFFER_STATIC, data);
+        var mesh = new pc.Mesh(device);
+        mesh.vertexBuffer = vb;
+        mesh.primitive[0].type = pc.PRIMITIVE_POINTS;
+        mesh.primitive[0].base = 0;
+        mesh.primitive[0].count = count;
+        mesh.primitive[0].indexed = false;
+        return mesh;
+    }
+
+    function createPointsMaterial(attributes, vs, fs) {
+        var shader = new pc.Shader(device, { attributes: attributes, vshader: vs, fshader: fs });
+        var mat = new pc.Material();
+        mat.shader = shader;
+        mat.blendType = pc.BLEND_ADDITIVEALPHA; // ONE, ONE — pure additive energy
+        mat.depthWrite = false;
+        mat.cull = pc.CULLFACE_NONE;
+        return mat;
+    }
+
+    function spawnPointsEntity(name, mesh, material, halfExtents) {
+        mesh.aabb = new pc.BoundingBox(new pc.Vec3(0, 0, 0), halfExtents);
+        var e = new pc.Entity(name);
+        app.root.addChild(e);
+        e.addComponent('model', { type: 'sphere' }); // host component, mesh swapped below
+        var mi = e.model.meshInstances[0];
+        mi.mesh = mesh;
+        mi.material = material;
+        mi.cull = false;
+        return e;
+    }
+
+    // ---- 6a. Accretion haze: 20,000 large soft sprites.
+    //      A slow, thick, dim background flow sitting behind the sharp
+    //      Keplerian streak layer; gives the disk its volumetric body.
+    var HAZE_VS = [
+        'attribute vec4 aSeed;', // x: radius norm, y: angle0, z/w: randoms
+        'uniform mat4 matrix_view;',
+        'uniform mat4 matrix_projection;',
+        'uniform float uTime;',
+        'uniform float uInner;',
+        'uniform float uOuter;',
+        'uniform float uInflow;',
+        'uniform float uK;',
+        'uniform float uPointScale;',
+        'varying vec4 vColor;',
+        'vec3 temperature(float t) {', // t: 0 = inner (hot) .. 1 = outer (cold)
+        '    vec3 hot  = vec3(0.80, 0.86, 1.00) * 1.4;',
+        '    vec3 mid  = vec3(1.00, 0.42, 0.09) * 0.9;',
+        '    vec3 cold = vec3(0.32, 0.05, 0.02);',
+        '    if (t < 0.22) return mix(hot, mid, t / 0.22);',
+        '    return mix(mid, cold, (t - 0.22) / 0.78);',
+        '}',
+        'void main(void) {',
+        '    float r0 = mix(uInner + 0.5, uOuter, pow(aSeed.x, 1.25));',
+        '    float cycle = (r0 - uInner) / uInflow;',
+        '    float age = mod(uTime + aSeed.w * cycle, cycle);',
+        '    float r = r0 - uInflow * age;',
+        '',
+        '    float omega = uK * 0.62 * pow(r, -1.5);', // slightly sub-Keplerian flow
+        '    float theta = aSeed.y * 6.2831853 + omega * uTime;',
+        '',
+        '    float turb = sin(theta * 2.0 + uTime * 0.8 + aSeed.z * 31.0);',
+        '    float rt = r + turb * 0.08 * r;',
+        '    float y = (aSeed.z - 0.5) * (0.34 + 0.55 * r / uOuter) + turb * 0.12;',
+        '    vec3 pos = vec3(cos(theta) * rt, y, sin(theta) * rt);',
+        '',
+        '    float t = clamp((r - uInner) / (uOuter - uInner), 0.0, 1.0);',
+        '    float heat = pow(uInner / r, 1.3);',
+        '    vec3 col = temperature(t) * (0.25 + 1.6 * heat);',
+        '',
+        '    float life = age / cycle;',
+        '    float alpha = smoothstep(0.0, 0.12, life) * (1.0 - smoothstep(0.70, 1.0, life));',
+        '    vColor = vec4(col, alpha * 0.16);', // faint: hundreds overlap additively
+        '',
+        '    vec4 mvPosition = matrix_view * vec4(pos, 1.0);',
+        '    gl_Position = matrix_projection * mvPosition;',
+        '    float size = mix(0.55, 1.35, aSeed.z) * (1.0 + 0.5 * heat);',
+        '    gl_PointSize = clamp(uPointScale * size / max(-mvPosition.z, 0.1), 1.0, 220.0);',
+        '}'
+    ].join('\n');
+
+    var HAZE_FS = [
+        'precision highp float;',
+        'varying vec4 vColor;',
+        'void main(void) {',
+        '    vec2 d = gl_PointCoord - vec2(0.5);',
+        '    float a = exp(-dot(d, d) * 7.0);', // wide gaussian puff
+        '    gl_FragColor = vec4(vColor.rgb * (a * vColor.a), 1.0);', // premultiplied for ONE,ONE
+        '}'
+    ].join('\n');
+
+    var HAZE_COUNT = 20000;
+    var hazeMesh = createPointsMesh(
+        [{ semantic: pc.SEMANTIC_POSITION, components: 4, type: pc.TYPE_FLOAT32 }],
+        HAZE_COUNT,
+        function (data, stride) {
+            for (var i = 0; i < HAZE_COUNT; i++) {
+                var o = i * stride;
+                data[o]     = Math.random();
+                data[o + 1] = Math.random();
+                data[o + 2] = Math.random();
+                data[o + 3] = Math.random();
+            }
+        });
+    var hazeMat = createPointsMaterial({ aSeed: pc.SEMANTIC_POSITION }, HAZE_VS, HAZE_FS);
+    hazeMat.setParameter('uInner', 1.6);
+    hazeMat.setParameter('uOuter', 11.0);
+    hazeMat.setParameter('uInflow', 0.38);
+    hazeMat.setParameter('uK', 6.0);
+    hazeMat.setParameter('uTime', 0);
+    hazeMat.setParameter('uPointScale', 1000);
+    spawnPointsEntity('AccretionHaze', hazeMesh, hazeMat, new pc.Vec3(14, 4, 14));
 
     // ======================================================================
     // 7. Keplerian vortex layer — 40,000 GPU point-sprites, ONE draw call.
@@ -633,8 +717,9 @@
         '    float heat = pow(uInner / r, 1.35);',
         '    vec3 tangent = normalize(vec3(-sin(theta), 0.0, cos(theta)));',
         '    vec3 toCam = normalize(view_position - pos);',
-        '    float doppler = 1.0 + 1.1 * dot(tangent, toCam);',
-        '    col *= (0.30 + 2.4 * heat) * doppler;',
+        '    // clamped: the receding side dims but never dies (was going negative)',
+        '    float doppler = clamp(1.0 + 0.85 * dot(tangent, toCam), 0.30, 2.6);',
+        '    col *= (0.55 + 2.4 * heat) * doppler;',
         '',
         '    // fade at birth and as matter crosses the ISCO',
         '    float life = age / cycle;',
@@ -643,7 +728,7 @@
         '',
         '    vec4 mvPosition = matrix_view * vec4(pos, 1.0);',
         '    gl_Position = matrix_projection * mvPosition;',
-        '    float size = mix(0.045, 0.14, aSeed.z) * (1.0 + 0.8 * heat);',
+        '    float size = mix(0.06, 0.17, aSeed.z) * (1.0 + 0.8 * heat);',
         '    gl_PointSize = clamp(uPointScale * size / max(-mvPosition.z, 0.1), 1.0, 72.0);',
         '}'
     ].join('\n');
@@ -683,44 +768,6 @@
         '}'
     ].join('\n');
 
-    // ---- generic single-draw-call points mesh helper ----
-    function createPointsMesh(formatDesc, count, fillFn) {
-        var format = new pc.VertexFormat(device, formatDesc);
-        var strideFloats = format.size / 4;
-        var data = new Float32Array(count * strideFloats);
-        fillFn(data, strideFloats);
-        var vb = new pc.VertexBuffer(device, format, count, pc.BUFFER_STATIC, data);
-        var mesh = new pc.Mesh(device);
-        mesh.vertexBuffer = vb;
-        mesh.primitive[0].type = pc.PRIMITIVE_POINTS;
-        mesh.primitive[0].base = 0;
-        mesh.primitive[0].count = count;
-        mesh.primitive[0].indexed = false;
-        return mesh;
-    }
-
-    function createPointsMaterial(attributes, vs, fs) {
-        var shader = new pc.Shader(device, { attributes: attributes, vshader: vs, fshader: fs });
-        var mat = new pc.Material();
-        mat.shader = shader;
-        mat.blendType = pc.BLEND_ADDITIVEALPHA; // ONE, ONE — pure additive energy
-        mat.depthWrite = false;
-        mat.cull = pc.CULLFACE_NONE;
-        return mat;
-    }
-
-    function spawnPointsEntity(name, mesh, material, halfExtents) {
-        mesh.aabb = new pc.BoundingBox(new pc.Vec3(0, 0, 0), halfExtents);
-        var e = new pc.Entity(name);
-        app.root.addChild(e);
-        e.addComponent('model', { type: 'sphere' }); // host component, mesh swapped below
-        var mi = e.model.meshInstances[0];
-        mi.mesh = mesh;
-        mi.material = material;
-        mi.cull = false;
-        return e;
-    }
-
     // ---- Keplerian disk: 40,000 seeded points ----
     var DISK_COUNT = 40000;
     var diskMesh = createPointsMesh(
@@ -745,51 +792,69 @@
     spawnPointsEntity('KeplerianDisk', diskMesh, diskMat, new pc.Vec3(12, 3, 12));
 
     // ======================================================================
-    // 8. Relativistic jets — two opposing collimated additive columns
+    // 8. Relativistic jets — 6,000 GPU point-sprites, ONE draw call.
+    //    Both poles share a single mesh: aSeed.w picks the pole sign.
+    //    A narrow bright foot widens into a faint helical beam; particles
+    //    stream outward at constant speed and wrap via mod().
     // ======================================================================
-    var jetUp = new pc.Entity('JetUp');
-    app.root.addChild(jetUp);
-    jetUp.addComponent('particlesystem', {
-        autoPlay: true,
-        numParticles: 2500,
-        lifetime: 2.4,
-        rate: 1200,
-        loop: true,
-        preWarm: true,
-        emitterShape: pc.EMITTERSHAPE_SPHERE,
-        emitterRadius: 0.32,        // narrow foot -> highly collimated beam
-        emitterRadiusInner: 0,
-        // extreme vertical velocity, tiny lateral spread
-        localVelocityGraph:  new pc.CurveSet([[0, -0.6, 1, -0.6], [0, 40, 1, 48], [0, -0.6, 1, -0.6]]),
-        localVelocityGraph2: new pc.CurveSet([[0,  0.6, 1,  0.6], [0, 46, 1, 55], [0,  0.6, 1,  0.6]]),
-        radialSpeedGraph: new pc.Curve([0, 0, 1, 0]),
-        scaleGraph:  new pc.Curve([0, 0.55, 0.3, 0.32, 1, 0.10]),
-        scaleGraph2: new pc.Curve([0, 0.30, 0.3, 0.18, 1, 0.05]),
-        colorGraph: new pc.CurveSet([
-            [0, 1.00, 1, 0.25],
-            [0, 1.00, 1, 0.55],
-            [0, 1.00, 1, 1.00]
-        ]),
-        alphaGraph: new pc.Curve([0, 0, 0.06, 0.85, 0.55, 0.50, 1, 0]),
-        blendType: pc.BLEND_ADDITIVE,
-        colorMap: softTex,
-        intensity: 2.4,
-        stretch: 1.4,               // streak particles along motion
-        alignToMotion: true,
-        depthWrite: false,
-        depthSoftening: 0,
-        sort: pc.PARTICLESORT_NONE,
-        startAngle: 0,
-        startAngle2: 360,
-        rotationSpeedGraph: new pc.Curve([0, 0, 1, 0]),
-        lighting: false,
-        halfLambert: false,
-        initialVelocity: 0
-    });
-    var jetDown = jetUp.clone();
-    jetDown.name = 'JetDown';
-    jetDown.setEulerAngles(180, 0, 0); // flip the beam to the opposite pole
-    app.root.addChild(jetDown);
+    var JET_VS = [
+        'attribute vec4 aSeed;', // x: height phase, y: angle0, z: lateral rand, w: pole (0/1)
+        'uniform mat4 matrix_view;',
+        'uniform mat4 matrix_projection;',
+        'uniform float uTime;',
+        'uniform float uPointScale;',
+        'varying vec4 vColor;',
+        'void main(void) {',
+        '    float pole = aSeed.w < 0.5 ? 1.0 : -1.0;',
+        '    float H = 44.0;',                             // beam length (world units)
+        '    float h = mod(aSeed.x * H + uTime * 12.0, H);', // height along the beam
+        '',
+        '    // collimated: narrow foot, slow widening, gentle helical twist',
+        '    float spread = 0.16 + h * 0.030;',
+        '    float ang = aSeed.y * 6.2831853 + pole * (h * 0.22 + uTime * 0.5);',
+        '    float rad = spread * aSeed.z;',
+        '    vec3 pos = vec3(cos(ang) * rad, pole * (0.9 + h), sin(ang) * rad);',
+        '',
+        '    // hot white-blue foot cooling to deep indigo at the tip',
+        '    vec3 col = mix(vec3(0.75, 0.85, 1.00) * 2.2, vec3(0.22, 0.30, 0.95), pow(h / H, 0.6));',
+        '    col *= 0.45 + 1.8 * exp(-h * 0.16);',
+        '    float fade = 1.0 - h / H;',
+        '    vColor = vec4(col, fade * fade * 0.75);',
+        '',
+        '    vec4 mvPosition = matrix_view * vec4(pos, 1.0);',
+        '    gl_Position = matrix_projection * mvPosition;',
+        '    float size = mix(0.30, 0.08, pow(h / H, 0.7));',
+        '    gl_PointSize = clamp(uPointScale * size / max(-mvPosition.z, 0.1), 1.0, 26.0);',
+        '}'
+    ].join('\n');
+
+    var JET_FS = [
+        'precision highp float;',
+        'varying vec4 vColor;',
+        'void main(void) {',
+        '    vec2 d = gl_PointCoord - vec2(0.5);',
+        '    float a = smoothstep(0.5, 0.10, length(d));',
+        '    gl_FragColor = vec4(vColor.rgb * (a * vColor.a), 1.0);', // premultiplied for ONE,ONE
+        '}'
+    ].join('\n');
+
+    var JET_COUNT = 6000;
+    var jetMesh = createPointsMesh(
+        [{ semantic: pc.SEMANTIC_POSITION, components: 4, type: pc.TYPE_FLOAT32 }],
+        JET_COUNT,
+        function (data, stride) {
+            for (var i = 0; i < JET_COUNT; i++) {
+                var o = i * stride;
+                data[o]     = Math.random();
+                data[o + 1] = Math.random();
+                data[o + 2] = Math.random();
+                data[o + 3] = i % 2; // alternate poles
+            }
+        });
+    var jetMat = createPointsMaterial({ aSeed: pc.SEMANTIC_POSITION }, JET_VS, JET_FS);
+    jetMat.setParameter('uTime', 0);
+    jetMat.setParameter('uPointScale', 1000);
+    spawnPointsEntity('RelativisticJets', jetMesh, jetMat, new pc.Vec3(6, 48, 6));
 
     // ======================================================================
     // 9. Background starfield — 9,000 stars, pc.PRIMITIVE_POINTS, 1 draw call
@@ -841,13 +906,15 @@
     app.root.addChild(sys);
     sys.addComponent('script');
     var driver = sys.script.create('systemDriver');
-    driver.diskMaterial = diskMat;
+    driver.pointMaterials = [hazeMat, diskMat, jetMat];
     driver.starMaterial = starMat;
 
     // ======================================================================
     // 11. FPS counter (HTML overlay) + readiness flag
     // ======================================================================
     var fpsEl = document.getElementById('fps');
+    document.getElementById('pcount').textContent =
+        (HAZE_COUNT + DISK_COUNT + JET_COUNT + STAR_COUNT).toLocaleString('en-US');
     var frames = 0;
     var acc = 0;
     var totalFrames = 0;
