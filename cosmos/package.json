@@ -1,0 +1,10 @@
+{
+  "name": "cosmos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "COSMOS · 宇宙尺度之旅 — unified interactive 3D cosmos (black hole / Milky Way / solar system), static site, no build step",
+  "scripts": {
+    "serve": "python -m http.server 8801 --directory .",
+    "test": "node tests/smoke.js 8801 tests && node tests/url-state.js 8801"
+  }
+}
